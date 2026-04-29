@@ -45,6 +45,7 @@ export async function POST(request: Request) {
 
     const result = await parser.getText();
     const text = normalizePdfText(result.text);
+    const previewImage = await getPreviewImage(parser);
 
     if (text.length < 80) {
       return NextResponse.json(
@@ -60,6 +61,7 @@ export async function POST(request: Request) {
       fileName: file.name,
       pageCount: result.total,
       text,
+      previewImage,
       sections: splitCvSections(text),
     });
   } catch (error) {
@@ -72,6 +74,22 @@ export async function POST(request: Request) {
     );
   } finally {
     await parser?.destroy();
+  }
+}
+
+async function getPreviewImage(parser: PDFParse) {
+  try {
+    const screenshot = await parser.getScreenshot({
+      first: 1,
+      desiredWidth: 720,
+      imageDataUrl: true,
+      imageBuffer: false,
+    });
+
+    return screenshot.pages[0]?.dataUrl ?? "";
+  } catch (error) {
+    console.warn("SmartCV PDF preview failed:", error);
+    return "";
   }
 }
 

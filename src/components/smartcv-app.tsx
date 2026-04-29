@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clipboard,
+  Columns3,
   Copy,
   Download,
   FileText,
@@ -13,6 +14,7 @@ import {
   Lightbulb,
   Link,
   Loader2,
+  Pencil,
   RefreshCw,
   Search,
   ShieldCheck,
@@ -31,6 +33,7 @@ import type {
 } from "@/lib/types";
 
 type TabId = "layers" | "evidence" | "ats" | "draft";
+type CvEditorMode = "sections" | "full";
 
 type StoredWorkspace = {
   cvText: string;
@@ -39,6 +42,7 @@ type StoredWorkspace = {
   forceLocal: boolean;
   parsedCvSections: ParsedCvSection[];
   cvFileName: string;
+  cvEditorMode: CvEditorMode;
   result: AnalysisResult | null;
   activeTab: TabId;
   layerDrafts: Record<string, string>;
@@ -111,7 +115,11 @@ export function SmartCvApp() {
   const [parsingCv, setParsingCv] = useState(false);
   const [error, setError] = useState("");
   const [cvFileName, setCvFileName] = useState("");
-  const [parsedCvSections, setParsedCvSections] = useState<ParsedCvSection[]>([]);
+  const [cvPreviewImage, setCvPreviewImage] = useState("");
+  const [cvEditorMode, setCvEditorMode] = useState<CvEditorMode>("sections");
+  const [parsedCvSections, setParsedCvSections] = useState<ParsedCvSection[]>(
+    () => splitCvIntoSections(sampleCv),
+  );
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("layers");
   const [layerDrafts, setLayerDrafts] = useState<Record<string, string>>({});
@@ -147,10 +155,19 @@ export function SmartCvApp() {
           setCvFileName(
             typeof workspace.cvFileName === "string" ? workspace.cvFileName : "",
           );
+          setCvEditorMode(
+            isCvEditorMode(workspace.cvEditorMode)
+              ? workspace.cvEditorMode
+              : "sections",
+          );
           setParsedCvSections(
             Array.isArray(workspace.parsedCvSections)
               ? workspace.parsedCvSections
-              : [],
+              : splitCvIntoSections(
+                  typeof workspace.cvText === "string"
+                    ? workspace.cvText
+                    : sampleCv,
+                ),
           );
           setResult(workspace.result ?? null);
           setActiveTab(
@@ -182,6 +199,7 @@ export function SmartCvApp() {
       forceLocal,
       parsedCvSections,
       cvFileName,
+      cvEditorMode,
       result,
       activeTab,
       layerDrafts,
@@ -195,6 +213,7 @@ export function SmartCvApp() {
     acceptedLayers,
     activeTab,
     cvText,
+    cvEditorMode,
     cvFileName,
     finalDraft,
     forceLocal,
@@ -246,7 +265,13 @@ export function SmartCvApp() {
 
       setCvText(payload.text || "");
       setCvFileName(payload.fileName || file.name);
-      setParsedCvSections(payload.sections || []);
+      setCvPreviewImage(payload.previewImage || "");
+      setCvEditorMode("sections");
+      setParsedCvSections(
+        Array.isArray(payload.sections) && payload.sections.length
+          ? payload.sections
+          : splitCvIntoSections(payload.text || ""),
+      );
       setResult(null);
       setFinalDraft("");
       setLayerDrafts({});
@@ -308,7 +333,9 @@ export function SmartCvApp() {
     setJobText(sampleJob);
     setJobUrl("");
     setCvFileName("");
-    setParsedCvSections([]);
+    setCvPreviewImage("");
+    setCvEditorMode("sections");
+    setParsedCvSections(splitCvIntoSections(sampleCv));
     setResult(null);
     setFinalDraft("");
     setLayerDrafts({});
@@ -323,6 +350,8 @@ export function SmartCvApp() {
     setJobText("");
     setJobUrl("");
     setCvFileName("");
+    setCvPreviewImage("");
+    setCvEditorMode("sections");
     setParsedCvSections([]);
     setResult(null);
     setFinalDraft("");
@@ -351,6 +380,23 @@ export function SmartCvApp() {
         .map((layer) => `${layer.label}\n${layerDrafts[layer.id] ?? layer.suggested}`)
         .join("\n\n"),
     );
+  }
+
+  function updateFullCv(value: string) {
+    setCvText(value);
+    setParsedCvSections(splitCvIntoSections(value));
+    setResult(null);
+    setFinalDraft("");
+  }
+
+  function updateCvSection(index: number, value: string) {
+    const next = parsedCvSections.map((section, sectionIndex) =>
+      sectionIndex === index ? { ...section, text: value } : section,
+    );
+    setParsedCvSections(next);
+    setCvText(composeCvSections(next));
+    setResult(null);
+    setFinalDraft("");
   }
 
   async function copyDraft() {
@@ -502,12 +548,10 @@ export function SmartCvApp() {
               onFile={parseCvPdf}
             />
 
-            <TextPanel
-              id="cv-text"
-              label="CV"
-              value={cvText}
-              onChange={setCvText}
-              rows={15}
+            <CvPreviewPanel
+              fileName={cvFileName}
+              previewImage={cvPreviewImage}
+              hasCvText={cvText.trim().length > 0}
             />
 
             <label className="flex items-center justify-between gap-3 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm">
@@ -546,7 +590,14 @@ export function SmartCvApp() {
                 onDownload={downloadDraft}
               />
             ) : (
-              <DraftPlaceholder />
+              <OriginalCvEditor
+                cvText={cvText}
+                mode={cvEditorMode}
+                sections={parsedCvSections}
+                onModeChange={setCvEditorMode}
+                onFullChange={updateFullCv}
+                onSectionChange={updateCvSection}
+              />
             )}
 
             {result ? (
@@ -638,6 +689,71 @@ function isTabId(value: unknown): value is TabId {
   );
 }
 
+function isCvEditorMode(value: unknown): value is CvEditorMode {
+  return value === "sections" || value === "full";
+}
+
+function splitCvIntoSections(text: string): ParsedCvSection[] {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+
+  const headingAliases = [
+    "summary",
+    "profile",
+    "objective",
+    "experience",
+    "employment",
+    "work history",
+    "skills",
+    "education",
+    "certifications",
+    "projects",
+    "languages",
+  ];
+  const lines = trimmed.split("\n");
+  const sections: ParsedCvSection[] = [];
+  let current: ParsedCvSection = { label: "Header", text: "" };
+
+  for (const line of lines) {
+    const normalized = line.trim().toLowerCase().replace(/:$/, "");
+    const isHeading =
+      headingAliases.includes(normalized) ||
+      /^[A-Z][A-Z /&-]{2,}:?$/.test(line.trim());
+
+    if (isHeading) {
+      if (current.text.trim()) {
+        sections.push({ ...current, text: current.text.trim() });
+      }
+      current = { label: toTitleCase(normalized), text: "" };
+    } else {
+      current.text += `${line}\n`;
+    }
+  }
+
+  if (current.text.trim()) {
+    sections.push({ ...current, text: current.text.trim() });
+  }
+
+  return sections;
+}
+
+function composeCvSections(sections: ParsedCvSection[]) {
+  return sections
+    .map((section) => {
+      if (section.label === "Header") return section.text.trim();
+      return `${section.label}\n${section.text.trim()}`.trim();
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function toTitleCase(value: string) {
+  return value
+    .split(" ")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
 function CvUploadPanel({
   fileName,
   parsing,
@@ -700,17 +816,143 @@ function CvUploadPanel({
   );
 }
 
-function DraftPlaceholder() {
+function CvPreviewPanel({
+  fileName,
+  previewImage,
+  hasCvText,
+}: {
+  fileName: string;
+  previewImage: string;
+  hasCvText: boolean;
+}) {
   return (
-    <div className="rounded-md border border-dashed border-zinc-300 bg-white p-5">
-      <div className="mb-3 flex items-center gap-3">
-        <FileSearch className="h-5 w-5 text-emerald-700" aria-hidden="true" />
-        <h2 className="text-lg font-semibold">Redone CV will appear here</h2>
+    <div className="rounded-md border border-zinc-200 bg-white p-3">
+      <div className="mb-3 flex items-center gap-2">
+        <FileSearch className="h-4 w-4 text-emerald-700" aria-hidden="true" />
+        <h2 className="text-sm font-semibold">CV preview</h2>
       </div>
-      <p className="max-w-2xl text-sm leading-6 text-zinc-600">
-        Add a job description, paste or upload your CV, then run analysis. The
-        center stays focused on the rewritten CV so you can edit it directly.
-      </p>
+      {previewImage ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={previewImage}
+          alt={fileName ? `${fileName} preview` : "CV preview"}
+          className="max-h-[520px] w-full rounded border border-zinc-200 object-contain"
+        />
+      ) : (
+        <div className="flex min-h-72 flex-col items-center justify-center rounded border border-dashed border-zinc-300 bg-zinc-50 p-4 text-center">
+          <FileText className="mb-3 h-8 w-8 text-zinc-400" aria-hidden="true" />
+          <p className="text-sm font-medium text-zinc-700">
+            {hasCvText ? "Text CV loaded" : "No CV preview yet"}
+          </p>
+          <p className="mt-1 text-sm leading-5 text-zinc-500">
+            Upload a PDF to show the first page as an image preview.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OriginalCvEditor({
+  cvText,
+  mode,
+  sections,
+  onModeChange,
+  onFullChange,
+  onSectionChange,
+}: {
+  cvText: string;
+  mode: CvEditorMode;
+  sections: ParsedCvSection[];
+  onModeChange: (mode: CvEditorMode) => void;
+  onFullChange: (value: string) => void;
+  onSectionChange: (index: number, value: string) => void;
+}) {
+  const editableSections = sections.length ? sections : splitCvIntoSections(cvText);
+
+  return (
+    <div className="rounded-md border border-zinc-200 bg-white p-4">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold">Original CV editor</h2>
+          <p className="mt-1 text-sm leading-6 text-zinc-600">
+            Review the parsed CV first. Edit the full text or work section by
+            section before generating the redone CV.
+          </p>
+        </div>
+        <div className="inline-flex rounded-md border border-zinc-200 bg-white p-1">
+          <button
+            type="button"
+            onClick={() => onModeChange("sections")}
+            className={`inline-flex h-8 items-center gap-2 rounded px-3 text-sm font-medium ${
+              mode === "sections"
+                ? "bg-zinc-950 text-white"
+                : "text-zinc-600 hover:bg-zinc-50"
+            }`}
+          >
+            <Columns3 className="h-4 w-4" aria-hidden="true" />
+            Sections
+          </button>
+          <button
+            type="button"
+            onClick={() => onModeChange("full")}
+            className={`inline-flex h-8 items-center gap-2 rounded px-3 text-sm font-medium ${
+              mode === "full"
+                ? "bg-zinc-950 text-white"
+                : "text-zinc-600 hover:bg-zinc-50"
+            }`}
+          >
+            <Pencil className="h-4 w-4" aria-hidden="true" />
+            Full CV
+          </button>
+        </div>
+      </div>
+
+      {mode === "sections" ? (
+        <div className="space-y-3">
+          {editableSections.length ? (
+            editableSections.map((section, index) => (
+              <div
+                key={`${section.label}-${index}`}
+                className="rounded-md border border-zinc-200 bg-zinc-50 p-3"
+              >
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <label
+                    htmlFor={`cv-section-${index}`}
+                    className="text-sm font-semibold text-zinc-800"
+                  >
+                    {section.label}
+                  </label>
+                  <span className="text-xs text-zinc-400">
+                    {section.text.length} chars
+                  </span>
+                </div>
+                <textarea
+                  id={`cv-section-${index}`}
+                  value={section.text}
+                  onChange={(event) =>
+                    onSectionChange(index, event.target.value)
+                  }
+                  rows={Math.min(12, Math.max(4, section.text.split("\n").length + 1))}
+                  className="w-full resize-y rounded-md border border-zinc-200 bg-white p-3 text-sm leading-6 outline-none focus:border-emerald-600"
+                />
+              </div>
+            ))
+          ) : (
+            <div className="rounded-md border border-dashed border-zinc-300 bg-zinc-50 p-5 text-sm text-zinc-600">
+              Upload a PDF or paste CV text in full mode to create editable
+              sections.
+            </div>
+          )}
+        </div>
+      ) : (
+        <textarea
+          value={cvText}
+          onChange={(event) => onFullChange(event.target.value)}
+          rows={30}
+          className="w-full resize-y rounded-md border border-zinc-200 bg-white p-4 font-mono text-sm leading-6 outline-none focus:border-emerald-600"
+        />
+      )}
     </div>
   );
 }
