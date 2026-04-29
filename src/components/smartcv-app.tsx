@@ -425,6 +425,27 @@ export function SmartCvApp() {
         </div>
       </header>
 
+      {error ? (
+        <div className="sticky top-16 z-10 border-b border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900 shadow-sm">
+          <div className="mx-auto flex max-w-[1800px] items-start justify-between gap-3">
+            <div className="flex gap-2">
+              <AlertTriangle
+                className="mt-0.5 h-4 w-4 flex-none"
+                aria-hidden="true"
+              />
+              <p>{error}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setError("")}
+              className="rounded px-2 text-sm font-medium hover:bg-red-100"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       <main className="grid min-h-[calc(100vh-65px)] xl:grid-cols-[390px_minmax(0,1fr)_360px]">
         <aside className="border-b border-zinc-200 bg-white p-4 xl:border-b-0 xl:border-r xl:p-5">
           <div className="space-y-4 xl:sticky xl:top-20">
@@ -506,12 +527,6 @@ export function SmartCvApp() {
               />
             </label>
 
-            {error ? (
-              <div className="flex gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
-                <AlertTriangle className="mt-0.5 h-4 w-4 flex-none" aria-hidden="true" />
-                <p>{error}</p>
-              </div>
-            ) : null}
           </div>
         </aside>
 

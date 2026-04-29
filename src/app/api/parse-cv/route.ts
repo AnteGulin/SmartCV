@@ -36,7 +36,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const data = new Uint8Array(await file.arrayBuffer());
+    const data = Buffer.from(await file.arrayBuffer());
     parser = new PDFParse({
       data,
       isEvalSupported: false,
@@ -62,14 +62,41 @@ export async function POST(request: Request) {
       text,
       sections: splitCvSections(text),
     });
-  } catch {
+  } catch (error) {
+    const message = getPdfErrorMessage(error);
+    console.error("SmartCV PDF parse failed:", error);
+
     return NextResponse.json(
-      { error: "Could not read that PDF. Try another export or paste the text." },
-      { status: 500 },
+      { error: message },
+      { status: 422 },
     );
   } finally {
     await parser?.destroy();
   }
+}
+
+function getPdfErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  const lower = message.toLowerCase();
+
+  if (lower.includes("password")) {
+    return "This PDF appears to be password protected. Export an unlocked PDF or paste the CV text.";
+  }
+
+  if (
+    lower.includes("invalid pdf") ||
+    lower.includes("bad xref") ||
+    lower.includes("formaterror") ||
+    lower.includes("corrupt")
+  ) {
+    return "This PDF export looks malformed. Try exporting it again as a standard PDF, or paste the CV text.";
+  }
+
+  if (lower.includes("worker")) {
+    return "The PDF parser could not start for this file. Try a normal PDF export, or paste the CV text for now.";
+  }
+
+  return "Could not extract readable text from this PDF. If it is scanned/image-based, export a text PDF or paste the CV text.";
 }
 
 function isPdf(file: File) {
