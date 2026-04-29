@@ -18,7 +18,7 @@ import {
   Wand2,
   XCircle,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
   AnalysisResult,
   AtsRisk,
@@ -28,6 +28,21 @@ import type {
 } from "@/lib/types";
 
 type TabId = "layers" | "evidence" | "ats" | "draft";
+
+type StoredWorkspace = {
+  cvText: string;
+  jobText: string;
+  jobUrl: string;
+  forceLocal: boolean;
+  result: AnalysisResult | null;
+  activeTab: TabId;
+  layerDrafts: Record<string, string>;
+  finalDraft: string;
+  acceptedLayerIds: string[];
+  savedAt: string;
+};
+
+const storageKey = "smartcv.workspace.v1";
 
 const sampleCv = `Alex Morgan
 Technical Support Specialist
@@ -96,6 +111,7 @@ export function SmartCvApp() {
   const [layerDrafts, setLayerDrafts] = useState<Record<string, string>>({});
   const [finalDraft, setFinalDraft] = useState("");
   const [acceptedLayers, setAcceptedLayers] = useState<Set<string>>(new Set());
+  const [hasHydrated, setHasHydrated] = useState(false);
 
   const canAnalyze = cvText.trim().length > 80 && jobText.trim().length > 80;
 
@@ -104,6 +120,73 @@ export function SmartCvApp() {
     const { matched, weak, missing } = result.keywordCoverage;
     return matched.length + weak.length + missing.length;
   }, [result]);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      const stored = window.localStorage.getItem(storageKey);
+
+      if (stored) {
+        try {
+          const workspace = JSON.parse(stored) as Partial<StoredWorkspace>;
+          setCvText(
+            typeof workspace.cvText === "string" ? workspace.cvText : sampleCv,
+          );
+          setJobText(
+            typeof workspace.jobText === "string"
+              ? workspace.jobText
+              : sampleJob,
+          );
+          setJobUrl(typeof workspace.jobUrl === "string" ? workspace.jobUrl : "");
+          setForceLocal(Boolean(workspace.forceLocal));
+          setResult(workspace.result ?? null);
+          setActiveTab(
+            isTabId(workspace.activeTab) ? workspace.activeTab : "layers",
+          );
+          setLayerDrafts(workspace.layerDrafts ?? {});
+          setFinalDraft(
+            typeof workspace.finalDraft === "string" ? workspace.finalDraft : "",
+          );
+          setAcceptedLayers(new Set(workspace.acceptedLayerIds ?? []));
+        } catch {
+          window.localStorage.removeItem(storageKey);
+        }
+      }
+
+      setHasHydrated(true);
+    }, 0);
+
+    return () => window.clearTimeout(timeout);
+  }, []);
+
+  useEffect(() => {
+    if (!hasHydrated) return;
+
+    const workspace: StoredWorkspace = {
+      cvText,
+      jobText,
+      jobUrl,
+      forceLocal,
+      result,
+      activeTab,
+      layerDrafts,
+      finalDraft,
+      acceptedLayerIds: [...acceptedLayers],
+      savedAt: new Date().toISOString(),
+    };
+
+    window.localStorage.setItem(storageKey, JSON.stringify(workspace));
+  }, [
+    acceptedLayers,
+    activeTab,
+    cvText,
+    finalDraft,
+    forceLocal,
+    hasHydrated,
+    jobText,
+    jobUrl,
+    layerDrafts,
+    result,
+  ]);
 
   async function fetchJobText() {
     if (!jobUrl.trim()) return;
@@ -170,10 +253,16 @@ export function SmartCvApp() {
     setCvText(sampleCv);
     setJobText(sampleJob);
     setJobUrl("");
+    setResult(null);
+    setFinalDraft("");
+    setLayerDrafts({});
+    setAcceptedLayers(new Set());
+    setActiveTab("layers");
     setError("");
   }
 
   function clearInputs() {
+    window.localStorage.removeItem(storageKey);
     setCvText("");
     setJobText("");
     setJobUrl("");
@@ -181,6 +270,7 @@ export function SmartCvApp() {
     setFinalDraft("");
     setLayerDrafts({});
     setAcceptedLayers(new Set());
+    setActiveTab("layers");
     setError("");
   }
 
@@ -237,6 +327,10 @@ export function SmartCvApp() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <div className="mr-1 hidden items-center gap-2 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800 sm:inline-flex">
+              <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+              {hasHydrated ? "Saved locally" : "Auto-save loading"}
+            </div>
             <button
               type="button"
               onClick={loadSample}
@@ -467,6 +561,15 @@ export function SmartCvApp() {
         </section>
       </main>
     </div>
+  );
+}
+
+function isTabId(value: unknown): value is TabId {
+  return (
+    value === "layers" ||
+    value === "evidence" ||
+    value === "ats" ||
+    value === "draft"
   );
 }
 
