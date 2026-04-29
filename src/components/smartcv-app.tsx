@@ -6,15 +6,18 @@ import {
   Clipboard,
   Copy,
   Download,
+  FileText,
   FileSearch,
   Gauge,
   Layers3,
+  Lightbulb,
   Link,
   Loader2,
   RefreshCw,
   Search,
   ShieldCheck,
   Sparkles,
+  Upload,
   Wand2,
   XCircle,
 } from "lucide-react";
@@ -34,12 +37,19 @@ type StoredWorkspace = {
   jobText: string;
   jobUrl: string;
   forceLocal: boolean;
+  parsedCvSections: ParsedCvSection[];
+  cvFileName: string;
   result: AnalysisResult | null;
   activeTab: TabId;
   layerDrafts: Record<string, string>;
   finalDraft: string;
   acceptedLayerIds: string[];
   savedAt: string;
+};
+
+type ParsedCvSection = {
+  label: string;
+  text: string;
 };
 
 const storageKey = "smartcv.workspace.v1";
@@ -91,13 +101,6 @@ Preferred skills
 - Experience working with product or engineering teams
 - Comfort documenting workflows and recurring issues`;
 
-const tabs: { id: TabId; label: string }[] = [
-  { id: "layers", label: "Layers" },
-  { id: "evidence", label: "Evidence" },
-  { id: "ats", label: "ATS" },
-  { id: "draft", label: "Draft" },
-];
-
 export function SmartCvApp() {
   const [cvText, setCvText] = useState(sampleCv);
   const [jobText, setJobText] = useState(sampleJob);
@@ -105,7 +108,10 @@ export function SmartCvApp() {
   const [forceLocal, setForceLocal] = useState(false);
   const [loading, setLoading] = useState(false);
   const [fetchingJob, setFetchingJob] = useState(false);
+  const [parsingCv, setParsingCv] = useState(false);
   const [error, setError] = useState("");
+  const [cvFileName, setCvFileName] = useState("");
+  const [parsedCvSections, setParsedCvSections] = useState<ParsedCvSection[]>([]);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("layers");
   const [layerDrafts, setLayerDrafts] = useState<Record<string, string>>({});
@@ -138,6 +144,14 @@ export function SmartCvApp() {
           );
           setJobUrl(typeof workspace.jobUrl === "string" ? workspace.jobUrl : "");
           setForceLocal(Boolean(workspace.forceLocal));
+          setCvFileName(
+            typeof workspace.cvFileName === "string" ? workspace.cvFileName : "",
+          );
+          setParsedCvSections(
+            Array.isArray(workspace.parsedCvSections)
+              ? workspace.parsedCvSections
+              : [],
+          );
           setResult(workspace.result ?? null);
           setActiveTab(
             isTabId(workspace.activeTab) ? workspace.activeTab : "layers",
@@ -166,6 +180,8 @@ export function SmartCvApp() {
       jobText,
       jobUrl,
       forceLocal,
+      parsedCvSections,
+      cvFileName,
       result,
       activeTab,
       layerDrafts,
@@ -179,12 +195,14 @@ export function SmartCvApp() {
     acceptedLayers,
     activeTab,
     cvText,
+    cvFileName,
     finalDraft,
     forceLocal,
     hasHydrated,
     jobText,
     jobUrl,
     layerDrafts,
+    parsedCvSections,
     result,
   ]);
 
@@ -206,6 +224,42 @@ export function SmartCvApp() {
       setError(reason instanceof Error ? reason.message : "Job fetch failed.");
     } finally {
       setFetchingJob(false);
+    }
+  }
+
+  async function parseCvPdf(file: File | null) {
+    if (!file) return;
+
+    setError("");
+    setParsingCv(true);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch("/api/parse-cv", {
+        method: "POST",
+        body: formData,
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "PDF parsing failed.");
+
+      setCvText(payload.text || "");
+      setCvFileName(payload.fileName || file.name);
+      setParsedCvSections(payload.sections || []);
+      setResult(null);
+      setFinalDraft("");
+      setLayerDrafts({});
+      setAcceptedLayers(new Set());
+      setActiveTab("layers");
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Could not read the PDF CV.",
+      );
+    } finally {
+      setParsingCv(false);
     }
   }
 
@@ -253,6 +307,8 @@ export function SmartCvApp() {
     setCvText(sampleCv);
     setJobText(sampleJob);
     setJobUrl("");
+    setCvFileName("");
+    setParsedCvSections([]);
     setResult(null);
     setFinalDraft("");
     setLayerDrafts({});
@@ -266,6 +322,8 @@ export function SmartCvApp() {
     setCvText("");
     setJobText("");
     setJobUrl("");
+    setCvFileName("");
+    setParsedCvSections([]);
     setResult(null);
     setFinalDraft("");
     setLayerDrafts({});
@@ -367,9 +425,9 @@ export function SmartCvApp() {
         </div>
       </header>
 
-      <main className="grid min-h-[calc(100vh-65px)] lg:grid-cols-[430px_minmax(0,1fr)]">
-        <aside className="border-b border-zinc-200 bg-white p-4 lg:border-b-0 lg:border-r lg:p-5">
-          <div className="space-y-4">
+      <main className="grid min-h-[calc(100vh-65px)] xl:grid-cols-[390px_minmax(0,1fr)_360px]">
+        <aside className="border-b border-zinc-200 bg-white p-4 xl:border-b-0 xl:border-r xl:p-5">
+          <div className="space-y-4 xl:sticky xl:top-20">
             <div>
               <label
                 htmlFor="job-url"
@@ -409,18 +467,26 @@ export function SmartCvApp() {
             </div>
 
             <TextPanel
-              id="cv-text"
-              label="CV"
-              value={cvText}
-              onChange={setCvText}
-              rows={16}
-            />
-            <TextPanel
               id="job-text"
               label="Job description"
               value={jobText}
               onChange={setJobText}
-              rows={14}
+              rows={11}
+            />
+
+            <CvUploadPanel
+              fileName={cvFileName}
+              parsing={parsingCv}
+              sections={parsedCvSections}
+              onFile={parseCvPdf}
+            />
+
+            <TextPanel
+              id="cv-text"
+              label="CV"
+              value={cvText}
+              onChange={setCvText}
+              rows={15}
             />
 
             <label className="flex items-center justify-between gap-3 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm">
@@ -449,10 +515,61 @@ export function SmartCvApp() {
           </div>
         </aside>
 
-        <section className="min-w-0 p-4 lg:p-6">
+        <section className="min-w-0 border-b border-zinc-200 p-4 xl:border-b-0 xl:border-r xl:p-5">
+          <div className="space-y-4">
+            {result?.meta.warning ? (
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                {result.meta.warning}
+              </div>
+            ) : null}
+
+            {result ? (
+              <DraftView
+                value={finalDraft}
+                onChange={setFinalDraft}
+                onCopy={copyDraft}
+                onDownload={downloadDraft}
+              />
+            ) : (
+              <DraftPlaceholder />
+            )}
+
+            {result ? (
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-base font-semibold">Section rewrites</h2>
+                    <p className="text-sm text-zinc-500">
+                      Edit each layer, then rebuild the middle draft.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={rebuildDraft}
+                    title="Rebuild draft from layer edits"
+                    className="inline-flex h-9 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium hover:bg-zinc-50"
+                  >
+                    <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                    Rebuild draft
+                  </button>
+                </div>
+                <LayerView
+                  layers={result.layers}
+                  drafts={layerDrafts}
+                  acceptedLayers={acceptedLayers}
+                  onChange={updateLayer}
+                  onAccept={acceptLayer}
+                />
+              </div>
+            ) : null}
+          </div>
+        </section>
+
+        <aside className="bg-[#f5f7f4] p-4 xl:p-5">
+          <div className="space-y-4 xl:sticky xl:top-20">
           {result ? (
-            <div className="space-y-4">
-              <div className="grid gap-3 md:grid-cols-4">
+            <>
+              <div className="grid grid-cols-2 gap-3">
                 <Metric
                   icon={<Gauge className="h-4 w-4" aria-hidden="true" />}
                   label="Parser"
@@ -479,86 +596,19 @@ export function SmartCvApp() {
                 />
               </div>
 
-              {result.meta.warning ? (
-                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                  {result.meta.warning}
-                </div>
-              ) : null}
-
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="inline-flex rounded-md border border-zinc-200 bg-white p-1">
-                  {tabs.map((tab) => (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      onClick={() => setActiveTab(tab.id)}
-                      className={`h-8 rounded px-3 text-sm font-medium ${
-                        activeTab === tab.id
-                          ? "bg-zinc-950 text-white"
-                          : "text-zinc-600 hover:bg-zinc-50"
-                      }`}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={rebuildDraft}
-                    title="Rebuild draft from layer edits"
-                    className="inline-flex h-9 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium hover:bg-zinc-50"
-                  >
-                    <RefreshCw className="h-4 w-4" aria-hidden="true" />
-                    Rebuild draft
-                  </button>
-                  <button
-                    type="button"
-                    onClick={copyDraft}
-                    title="Copy final draft"
-                    className="inline-flex h-9 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium hover:bg-zinc-50"
-                  >
-                    <Copy className="h-4 w-4" aria-hidden="true" />
-                    Copy
-                  </button>
-                </div>
-              </div>
-
-              {activeTab === "layers" ? (
-                <LayerView
-                  layers={result.layers}
-                  drafts={layerDrafts}
-                  acceptedLayers={acceptedLayers}
-                  onChange={updateLayer}
-                  onAccept={acceptLayer}
-                />
-              ) : null}
-
-              {activeTab === "evidence" ? (
-                <EvidenceView
-                  evidence={result.evidenceMap}
-                  coverage={result.keywordCoverage}
-                />
-              ) : null}
-
-              {activeTab === "ats" ? (
-                <AtsView risks={result.atsRisks} signals={result.parser.signals} />
-              ) : null}
-
-              {activeTab === "draft" ? (
-                <DraftView
-                  value={finalDraft}
-                  onChange={setFinalDraft}
-                  onCopy={copyDraft}
-                  onDownload={downloadDraft}
-                />
-              ) : null}
-            </div>
+              <SuggestionsPanel result={result} />
+              <EvidenceView
+                evidence={result.evidenceMap}
+                coverage={result.keywordCoverage}
+              />
+              <AtsView risks={result.atsRisks} signals={result.parser.signals} />
+            </>
           ) : (
-            <EmptyState />
+            <RightStartPanel />
           )}
-        </section>
+            <WorkspaceGuide />
+          </div>
+        </aside>
       </main>
     </div>
   );
@@ -570,6 +620,175 @@ function isTabId(value: unknown): value is TabId {
     value === "evidence" ||
     value === "ats" ||
     value === "draft"
+  );
+}
+
+function CvUploadPanel({
+  fileName,
+  parsing,
+  sections,
+  onFile,
+}: {
+  fileName: string;
+  parsing: boolean;
+  sections: ParsedCvSection[];
+  onFile: (file: File | null) => void;
+}) {
+  return (
+    <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <FileText className="h-4 w-4 text-emerald-700" aria-hidden="true" />
+          <h2 className="text-sm font-semibold">CV PDF reader</h2>
+        </div>
+        <label className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium hover:bg-zinc-50">
+          {parsing ? (
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <Upload className="h-4 w-4" aria-hidden="true" />
+          )}
+          Upload
+          <input
+            type="file"
+            accept="application/pdf,.pdf"
+            className="sr-only"
+            disabled={parsing}
+            onChange={(event) => onFile(event.target.files?.[0] ?? null)}
+          />
+        </label>
+      </div>
+
+      <p className="text-sm leading-5 text-zinc-600">
+        Upload an existing CV PDF and SmartCV will extract the text into the CV
+        field for section rewriting.
+      </p>
+
+      {fileName ? (
+        <div className="mt-3 rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs text-emerald-800">
+          Loaded: {fileName}
+        </div>
+      ) : null}
+
+      {sections.length ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {sections.map((section) => (
+            <span
+              key={`${section.label}-${section.text.length}`}
+              className="rounded bg-white px-2 py-1 text-xs text-zinc-600"
+            >
+              {section.label}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function DraftPlaceholder() {
+  return (
+    <div className="rounded-md border border-dashed border-zinc-300 bg-white p-5">
+      <div className="mb-3 flex items-center gap-3">
+        <FileSearch className="h-5 w-5 text-emerald-700" aria-hidden="true" />
+        <h2 className="text-lg font-semibold">Redone CV will appear here</h2>
+      </div>
+      <p className="max-w-2xl text-sm leading-6 text-zinc-600">
+        Add a job description, paste or upload your CV, then run analysis. The
+        center stays focused on the rewritten CV so you can edit it directly.
+      </p>
+    </div>
+  );
+}
+
+function RightStartPanel() {
+  return (
+    <div className="rounded-md border border-zinc-200 bg-white p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <Wand2 className="h-5 w-5 text-emerald-700" aria-hidden="true" />
+        <h2 className="text-base font-semibold">Job-specific suggestions</h2>
+      </div>
+      <p className="text-sm leading-6 text-zinc-600">
+        After analysis, this side will show what matters for the job: missing
+        evidence, weak keyword placement, and additions worth considering.
+      </p>
+    </div>
+  );
+}
+
+function WorkspaceGuide() {
+  return (
+    <div className="rounded-md border border-zinc-200 bg-white p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <ShieldCheck className="h-5 w-5 text-emerald-700" aria-hidden="true" />
+        <h2 className="text-base font-semibold">Ready to tailor</h2>
+      </div>
+      <div className="space-y-3">
+        <MiniStep
+          title="1. Read"
+          text="Upload a PDF CV or paste text. SmartCV keeps the original editable."
+        />
+        <MiniStep
+          title="2. Match"
+          text="The job description drives the evidence map and useful gaps."
+        />
+        <MiniStep
+          title="3. Rewrite"
+          text="Only real CV evidence becomes rewritten CV text."
+        />
+      </div>
+    </div>
+  );
+}
+
+function SuggestionsPanel({ result }: { result: AnalysisResult }) {
+  const meaningfulGaps = result.gaps.slice(0, 5);
+  const weakTerms = result.keywordCoverage.weak.slice(0, 6);
+
+  return (
+    <div className="rounded-md border border-zinc-200 bg-white p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <Lightbulb className="h-5 w-5 text-amber-600" aria-hidden="true" />
+        <h2 className="text-base font-semibold">What to add if true</h2>
+      </div>
+
+      {meaningfulGaps.length ? (
+        <div className="space-y-3">
+          {meaningfulGaps.map((gap) => (
+            <div key={gap.requirement} className="rounded-md bg-amber-50 p-3">
+              <h3 className="text-sm font-semibold text-amber-950">
+                {gap.requirement}
+              </h3>
+              <p className="mt-1 text-sm leading-5 text-amber-900">
+                {gap.userAction}
+              </p>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm leading-6 text-zinc-600">
+          No major unsupported job requirements were detected. Focus on making
+          the rewritten evidence sound natural.
+        </p>
+      )}
+
+      {weakTerms.length ? (
+        <div className="mt-4">
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-zinc-500">
+            Weak placement
+          </h3>
+          <div className="flex flex-wrap gap-2">
+            {weakTerms.map((term) => (
+              <span
+                key={term}
+                className="rounded bg-sky-50 px-2 py-1 text-xs text-sky-800"
+              >
+                {term}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -630,36 +849,6 @@ function Metric({
         {label}
       </div>
       <div className="text-2xl font-semibold tracking-normal">{value}</div>
-    </div>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="grid gap-4 xl:grid-cols-[1fr_380px]">
-      <div className="rounded-md border border-zinc-200 bg-white p-5">
-        <div className="mb-4 flex items-center gap-3">
-          <FileSearch className="h-5 w-5 text-emerald-700" aria-hidden="true" />
-          <h2 className="text-lg font-semibold">Ready to tailor</h2>
-        </div>
-        <div className="grid gap-3 md:grid-cols-3">
-          <MiniStep title="1. Parse" text="Split CV and job text into structured fields." />
-          <MiniStep title="2. Map" text="Connect job requirements to real CV evidence." />
-          <MiniStep title="3. Edit" text="Rewrite section layers and keep the final draft editable." />
-        </div>
-      </div>
-
-      <div className="rounded-md border border-zinc-200 bg-white p-5">
-        <div className="mb-4 flex items-center gap-2">
-          <ShieldCheck className="h-5 w-5 text-emerald-700" aria-hidden="true" />
-          <h2 className="text-lg font-semibold">Guardrails</h2>
-        </div>
-        <ul className="space-y-3 text-sm text-zinc-600">
-          <li>No invented skills, dates, metrics, or tools.</li>
-          <li>Keywords belong in real evidence, not dumped into skills.</li>
-          <li>ATS export should stay single-column and text-first.</li>
-        </ul>
-      </div>
     </div>
   );
 }
@@ -752,9 +941,16 @@ function EvidenceView({
   coverage: AnalysisResult["keywordCoverage"];
 }) {
   return (
-    <div className="grid gap-4 xl:grid-cols-[1fr_340px]">
+    <div className="space-y-4">
+      <div className="rounded-md border border-zinc-200 bg-white p-4">
+        <h2 className="mb-3 text-sm font-semibold">Keyword coverage</h2>
+        <CoverageGroup title="Matched" keywords={coverage.matched} tone="green" />
+        <CoverageGroup title="Weak" keywords={coverage.weak} tone="amber" />
+        <CoverageGroup title="Missing" keywords={coverage.missing} tone="red" />
+      </div>
+
       <div className="space-y-3">
-        {evidence.map((item) => (
+        {evidence.slice(0, 8).map((item) => (
           <article
             key={item.requirement}
             className="rounded-md border border-zinc-200 bg-white p-4"
@@ -772,13 +968,6 @@ function EvidenceView({
           </article>
         ))}
       </div>
-
-      <div className="rounded-md border border-zinc-200 bg-white p-4">
-        <h2 className="mb-3 text-sm font-semibold">Keyword coverage</h2>
-        <CoverageGroup title="Matched" keywords={coverage.matched} tone="green" />
-        <CoverageGroup title="Weak" keywords={coverage.weak} tone="amber" />
-        <CoverageGroup title="Missing" keywords={coverage.missing} tone="red" />
-      </div>
     </div>
   );
 }
@@ -791,7 +980,7 @@ function AtsView({
   signals: ParserSignal[];
 }) {
   return (
-    <div className="grid gap-4 xl:grid-cols-2">
+    <div className="space-y-4">
       <div className="rounded-md border border-zinc-200 bg-white p-4">
         <h2 className="mb-3 text-sm font-semibold">Parser signals</h2>
         <div className="space-y-3">

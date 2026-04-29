@@ -5,10 +5,12 @@ A Next.js MVP for evidence-based CV tailoring.
 It lets you:
 
 - Paste a CV
+- Upload an existing CV PDF and extract its text
 - Paste or fetch a job description URL
 - Analyze ATS readability signals
 - Map job requirements to real CV evidence
 - Edit suggested CV layers section by section
+- Review job-specific suggestions for meaningful additions
 - Build a final editable text draft
 
 ## Run Locally
