@@ -1,10 +1,13 @@
 "use client";
 
+import type { DraftAuditResult } from "@/lib/draft-audit";
 import type { TailoredDraftResult } from "@/lib/types";
 
 export function DraftValidationPanel({
+  audit,
   result,
 }: {
+  audit: DraftAuditResult | null;
   result: TailoredDraftResult;
 }) {
   const polish = result.meta.polish;
@@ -21,14 +24,35 @@ export function DraftValidationPanel({
           value={String(result.validation.missingHighImportanceRequirementIds.length)}
         />
         <StatCard
-          label="User-confirmed only"
-          value={String(result.validation.userConfirmedOnlyItemCount)}
+          label="Included in copy"
+          value={String(audit?.summary.includedInCopyCount ?? 0)}
         />
         <StatCard
-          label="Dropped items"
-          value={String(result.validation.droppedItemCount)}
+          label="Excluded items"
+          value={String(audit?.summary.excludedCount ?? 0)}
         />
       </div>
+
+      {audit ? (
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <StatCard
+            label="CV-only items"
+            value={String(audit.summary.cvOnlyCount)}
+          />
+          <StatCard
+            label="User-confirmed only"
+            value={String(audit.summary.userConfirmedOnlyCount)}
+          />
+          <StatCard
+            label="Mixed-source items"
+            value={String(audit.summary.mixedCount)}
+          />
+          <StatCard
+            label="Critical issues"
+            value={String(audit.summary.validationCriticalCount)}
+          />
+        </div>
+      ) : null}
 
       {polish ? (
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
@@ -52,6 +76,40 @@ export function DraftValidationPanel({
             label="Polish failed"
             value={String(polish.failedCount)}
           />
+        </div>
+      ) : null}
+
+      {audit?.validationGroups.length ? (
+        <div className="grid gap-3 xl:grid-cols-2">
+          {audit.validationGroups.map((group) => (
+            <section
+              key={group.id}
+              className="rounded-md border border-zinc-200 bg-white p-4"
+            >
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <GroupTonePill tone={group.tone} />
+                <h3 className="text-sm font-semibold text-zinc-900">
+                  {group.title}
+                </h3>
+                <span className="rounded bg-zinc-100 px-2 py-1 text-xs font-medium text-zinc-700">
+                  {group.count}
+                </span>
+              </div>
+              <div className="space-y-3">
+                {group.items.map((entry) => (
+                  <article
+                    key={entry.id}
+                    className="rounded-md border border-zinc-200 bg-zinc-50 p-3"
+                  >
+                    <p className="text-sm leading-6 text-zinc-900">{entry.label}</p>
+                    <p className="mt-1 text-xs leading-5 text-zinc-500">
+                      {entry.detail}
+                    </p>
+                  </article>
+                ))}
+              </div>
+            </section>
+          ))}
         </div>
       ) : null}
 
@@ -93,6 +151,24 @@ function StatCard({ label, value }: { label: string; value: string }) {
       </div>
       <div className="mt-2 text-2xl font-semibold text-zinc-950">{value}</div>
     </div>
+  );
+}
+
+function GroupTonePill({
+  tone,
+}: {
+  tone: NonNullable<DraftAuditResult["validationGroups"][number]>["tone"];
+}) {
+  const styles = {
+    critical: "border-red-200 bg-red-50 text-red-800",
+    warning: "border-amber-200 bg-amber-50 text-amber-800",
+    info: "border-sky-200 bg-sky-50 text-sky-800",
+  };
+
+  return (
+    <span className={`rounded border px-2 py-1 text-xs font-medium ${styles[tone]}`}>
+      {tone.charAt(0).toUpperCase() + tone.slice(1)}
+    </span>
   );
 }
 

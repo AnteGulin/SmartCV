@@ -12,6 +12,7 @@ import {
 } from "@/lib/analysis-utils";
 import type {
   CandidateFact,
+  DraftExclusionReason,
   DraftPolishCandidate,
   DraftPolishSummary,
   DraftStatus,
@@ -868,17 +869,75 @@ function isEligibleDraftPolishItem(
   );
 }
 
+export function getActiveDraftItemText(item: TailoredDraftItem) {
+  if (item.polish?.state === "validated" && item.polish.polishedText) {
+    return item.polish.polishedText;
+  }
+
+  return item.text;
+}
+
+export function isDraftItemIncludedInCopy(item: TailoredDraftItem) {
+  return (
+    item.reviewState === "ready" &&
+    item.type !== "review_note" &&
+    item.sourceLabel !== "user_confirmed_only"
+  );
+}
+
+export function getDraftItemCopyExclusionReason(
+  item: TailoredDraftItem,
+): DraftExclusionReason | undefined {
+  if (isDraftItemIncludedInCopy(item)) {
+    return undefined;
+  }
+
+  if (item.type === "review_note") {
+    return "review_note";
+  }
+
+  if (item.sourceLabel === "user_confirmed_only") {
+    return "user_confirmed_only";
+  }
+
+  if (item.warnings.some((warning) => warning.category === "blocked_requirement")) {
+    return "blocked_requirement";
+  }
+
+  if (
+    item.warnings.some(
+      (warning) => warning.category === "missing_requirement_support",
+    )
+  ) {
+    return "missing_requirement_support";
+  }
+
+  if (item.sourceLabel === "mixed" && item.reviewState !== "ready") {
+    return "mixed_requires_review";
+  }
+
+  if (item.reviewState === "dropped") {
+    return "dropped";
+  }
+
+  if (item.reviewState === "needs_review") {
+    return "needs_review";
+  }
+
+  return "copy_excluded_by_validation";
+}
+
 function buildCopyText(sections: TailoredDraftSection[]) {
   const lines: string[] = [];
   const headerItems = sections.find((section) => section.id === "header")?.items ?? [];
 
   for (const item of headerItems) {
-    if (item.reviewState === "ready") {
-      lines.push(getItemCopyText(item));
+    if (isDraftItemIncludedInCopy(item)) {
+      lines.push(getActiveDraftItemText(item));
     }
   }
 
-  if (headerItems.some((item) => item.reviewState === "ready")) {
+  if (headerItems.some((item) => isDraftItemIncludedInCopy(item))) {
     lines.push("");
   }
 
@@ -887,7 +946,7 @@ function buildCopyText(sections: TailoredDraftSection[]) {
       continue;
     }
 
-    const readyItems = section.items.filter((item) => item.reviewState === "ready");
+    const readyItems = section.items.filter((item) => isDraftItemIncludedInCopy(item));
 
     if (!readyItems.length) {
       continue;
@@ -896,21 +955,13 @@ function buildCopyText(sections: TailoredDraftSection[]) {
     lines.push(section.title);
 
     for (const item of readyItems) {
-      lines.push(`- ${getItemCopyText(item)}`);
+      lines.push(`- ${getActiveDraftItemText(item)}`);
     }
 
     lines.push("");
   }
 
   return lines.join("\n").trim();
-}
-
-function getItemCopyText(item: TailoredDraftItem) {
-  if (item.polish?.state === "validated" && item.polish.polishedText) {
-    return item.polish.polishedText;
-  }
-
-  return item.text;
 }
 
 function buildCombinedEvidenceText(facts: CandidateFact[]) {

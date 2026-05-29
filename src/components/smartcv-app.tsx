@@ -34,6 +34,7 @@ import {
   isTailoredDraftResult,
 } from "@/lib/analysis-validation";
 import { splitTextIntoSections } from "@/lib/analysis-utils";
+import { buildDraftAudit, type DraftAuditResult } from "@/lib/draft-audit";
 import {
   buildDraftPolishSignature,
   buildTailorInputSignature,
@@ -57,6 +58,7 @@ import type {
 } from "@/lib/types";
 
 type CvEditorMode = "sections" | "full";
+type DraftViewMode = "draft" | "audit";
 
 type StoredWorkspace = {
   cvText: string;
@@ -70,6 +72,8 @@ type StoredWorkspace = {
   tailoredDraft: TailoredDraftResult | null;
   tailoredDraftSignature: string | null;
   tailoredDraftPolishSignature: string | null;
+  draftViewMode?: DraftViewMode;
+  expandedDraftAuditItemIds?: string[];
   requirementFilter: RequirementFilter;
   savedAt: string;
 };
@@ -155,6 +159,10 @@ export function SmartCvApp() {
   const [draftError, setDraftError] = useState("");
   const [polishLoading, setPolishLoading] = useState(false);
   const [polishError, setPolishError] = useState("");
+  const [draftViewMode, setDraftViewMode] = useState<DraftViewMode>("draft");
+  const [expandedDraftAuditItemIds, setExpandedDraftAuditItemIds] = useState<string[]>(
+    [],
+  );
   const [copiedDraft, setCopiedDraft] = useState(false);
   const [hasHydrated, setHasHydrated] = useState(false);
 
@@ -279,6 +287,11 @@ export function SmartCvApp() {
               workspace.tailoredDraftPolishSignature === expectedPolishSignature)
               ? storedTailoredDraft
               : null;
+          const hydratedDraftItemIds = new Set(
+            nextTailoredDraft?.draft.sections.flatMap((section) =>
+              section.items.map((item) => item.id),
+            ) ?? [],
+          );
           setResult(
             nextTailoredDraft?.analysis ??
               (isPhase1AnalysisResult(workspace.result) ? workspace.result : null),
@@ -289,6 +302,16 @@ export function SmartCvApp() {
             nextTailoredDraft?.meta.polish?.attempted
               ? expectedPolishSignature
               : null,
+          );
+          setDraftViewMode(
+            isDraftViewMode(workspace.draftViewMode) ? workspace.draftViewMode : "draft",
+          );
+          setExpandedDraftAuditItemIds(
+            nextTailoredDraft && isStringArray(workspace.expandedDraftAuditItemIds)
+              ? workspace.expandedDraftAuditItemIds.filter((itemId) =>
+                  hydratedDraftItemIds.has(itemId),
+                )
+              : [],
           );
           setRequirementFilter(
             isRequirementFilter(workspace.requirementFilter)
@@ -321,6 +344,8 @@ export function SmartCvApp() {
       tailoredDraft,
       tailoredDraftSignature,
       tailoredDraftPolishSignature,
+      draftViewMode,
+      expandedDraftAuditItemIds,
       requirementFilter,
       savedAt: new Date().toISOString(),
     };
@@ -330,7 +355,9 @@ export function SmartCvApp() {
     cvEditorMode,
     cvFileName,
     cvText,
+    draftViewMode,
     forceLocal,
+    expandedDraftAuditItemIds,
     hasHydrated,
     jobText,
     jobUrl,
@@ -355,6 +382,7 @@ export function SmartCvApp() {
     setTailoredDraft(null);
     setTailoredDraftSignature(null);
     setTailoredDraftPolishSignature(null);
+    setExpandedDraftAuditItemIds([]);
     setCopiedDraft(false);
     setDraftError("");
     setPolishError("");
@@ -546,6 +574,12 @@ export function SmartCvApp() {
     ? countEligibleDraftPolishItems(tailoredDraft)
     : 0;
   const polishedDraftItemCount = tailoredDraft?.meta.polish?.polishedCount ?? 0;
+  const draftAudit = useMemo<DraftAuditResult | null>(
+    () => (tailoredDraft ? buildDraftAudit(tailoredDraft) : null),
+    [tailoredDraft],
+  );
+  const includedDraftItemCount = draftAudit?.summary.includedInCopyCount ?? 0;
+  const excludedDraftItemCount = draftAudit?.summary.excludedCount ?? 0;
 
   function updateConfirmationDraft(
     requirementFingerprint: string,
@@ -663,6 +697,7 @@ export function SmartCvApp() {
       setTailoredDraft(payload);
       setTailoredDraftSignature(tailorInputSignature);
       setTailoredDraftPolishSignature(null);
+      setExpandedDraftAuditItemIds([]);
       setCopiedDraft(false);
     } catch (reason) {
       setDraftError(
@@ -724,11 +759,19 @@ export function SmartCvApp() {
             payload.meta.polish.model,
           )
         : null;
+      const polishedDraftItemIds = new Set(
+        payload.draft.sections.flatMap((section) =>
+          section.items.map((item) => item.id),
+        ),
+      );
 
       setResult(payload.analysis);
       setTailoredDraft(payload);
       setTailoredDraftSignature(tailorInputSignature);
       setTailoredDraftPolishSignature(nextPolishSignature);
+      setExpandedDraftAuditItemIds((current) =>
+        current.filter((itemId) => polishedDraftItemIds.has(itemId)),
+      );
       setCopiedDraft(false);
     } catch (reason) {
       setPolishError(
@@ -751,6 +794,14 @@ export function SmartCvApp() {
     } catch {
       setDraftError("Could not copy the validated draft to the clipboard.");
     }
+  }
+
+  function toggleDraftAuditItem(itemId: string) {
+    setExpandedDraftAuditItemIds((current) =>
+      current.includes(itemId)
+        ? current.filter((existingId) => existingId !== itemId)
+        : [...current, itemId],
+    );
   }
 
   return (
@@ -962,15 +1013,20 @@ export function SmartCvApp() {
                   onSave={saveConfirmedEvidence}
                 />
                 <TailoredDraftPanel
+                  audit={draftAudit}
                   copied={copiedDraft}
                   draftError={draftError}
                   draftLoading={draftLoading}
+                  draftViewMode={draftViewMode}
+                  expandedAuditItemIds={expandedDraftAuditItemIds}
                   polishEligibleCount={eligiblePolishCount}
                   polishError={polishError}
                   polishLoading={polishLoading}
                   onCopy={copyValidatedDraft}
+                  onDraftViewModeChange={setDraftViewMode}
                   onGenerate={generateTailoredDraft}
                   onPolish={polishTailoredDraft}
+                  onToggleAuditItem={toggleDraftAuditItem}
                   result={tailoredDraft}
                 />
               </>
@@ -1081,6 +1137,14 @@ export function SmartCvApp() {
                       value={String(readyDraftItemCount)}
                     />
                     <SummaryLine
+                      label="Included in copy"
+                      value={String(includedDraftItemCount)}
+                    />
+                    <SummaryLine
+                      label="Excluded"
+                      value={String(excludedDraftItemCount)}
+                    />
+                    <SummaryLine
                       label="Polish-eligible"
                       value={String(eligiblePolishCount)}
                     />
@@ -1133,6 +1197,10 @@ function isCvEditorMode(value: unknown): value is CvEditorMode {
   return value === "sections" || value === "full";
 }
 
+function isDraftViewMode(value: unknown): value is DraftViewMode {
+  return value === "draft" || value === "audit";
+}
+
 function isRequirementFilter(value: unknown): value is RequirementFilter {
   return (
     value === "all" ||
@@ -1141,6 +1209,10 @@ function isRequirementFilter(value: unknown): value is RequirementFilter {
     value === "missing" ||
     value === "blocked"
   );
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 function isSectionArray(value: unknown): value is SectionText[] {

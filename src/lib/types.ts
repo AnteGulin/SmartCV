@@ -218,6 +218,17 @@ export type DraftSourceLabel =
   | "passthrough";
 
 export type DraftStatus = "ready" | "needs_review" | "blocked";
+export type DraftCopyStatus = "included" | "excluded";
+export type DraftActiveTextSource = "deterministic" | "polished_validated";
+export type DraftExclusionReason =
+  | "needs_review"
+  | "dropped"
+  | "review_note"
+  | "user_confirmed_only"
+  | "mixed_requires_review"
+  | "blocked_requirement"
+  | "missing_requirement_support"
+  | "copy_excluded_by_validation";
 
 export interface DraftValidationIssue {
   id: string;
