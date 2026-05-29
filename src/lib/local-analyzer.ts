@@ -22,6 +22,11 @@ import {
   splitTextIntoSections,
   uniqueStrings,
 } from "@/lib/analysis-utils";
+import {
+  buildRequirementFingerprint,
+  buildUserEvidenceAnchor,
+  isMeaningfulUserEvidenceText,
+} from "@/lib/user-evidence";
 import type {
   AnalyzerMode,
   ATSHygieneWarning,
@@ -36,6 +41,8 @@ import type {
   RequirementCategory,
   SectionText,
   TextAnchor,
+  UserConfirmedEvidence,
+  UserEvidenceType,
 } from "@/lib/types";
 
 const DEFAULT_LOCAL_MODEL = "local-deterministic-evidence-engine";
@@ -257,6 +264,7 @@ const SHIFT_PATTERNS = [
 
 type AnalyzeLocallyOptions = {
   assistant?: GroundedOpenAIAssist;
+  confirmedEvidence?: UserConfirmedEvidence[];
   mode?: AnalyzerMode;
   model?: string;
   warnings?: string[];
@@ -357,9 +365,32 @@ export function analyzeLocally(
     jobSections,
     options.assistant,
   );
-  const matchedRequirements = matchRequirementsToFacts(requirements, cvFacts);
+  const metaWarnings = [...(options.warnings ?? [])];
+  const requirementFingerprints = new Set(
+    requirements.map((requirement) => requirement.fingerprint),
+  );
+  const applicableConfirmedEvidence = (options.confirmedEvidence ?? []).filter(
+    (item) => requirementFingerprints.has(item.requirementFingerprint),
+  );
+  const staleConfirmedEvidenceCount =
+    (options.confirmedEvidence ?? []).length - applicableConfirmedEvidence.length;
+  const confirmedFacts = buildUserConfirmedFacts(applicableConfirmedEvidence);
+  const allFacts = [...cvFacts, ...confirmedFacts];
+  const matchedRequirements = matchRequirementsToFacts(requirements, allFacts);
   const atsWarnings = runAtsHygieneChecks(cvText, cvSections, cvFacts);
   const scoring = computeScoring(matchedRequirements, atsWarnings);
+
+  if (staleConfirmedEvidenceCount > 0) {
+    metaWarnings.push(
+      "Some saved user confirmations did not match the current job requirements and were not applied.",
+    );
+  }
+
+  if (applicableConfirmedEvidence.length > 0 && confirmedFacts.length === 0) {
+    metaWarnings.push(
+      "Saved user confirmations were available, but they were too vague or incomplete to use as evidence.",
+    );
+  }
 
   return {
     meta: {
@@ -367,12 +398,12 @@ export function analyzeLocally(
       mode: options.mode ?? "local",
       model: options.model ?? DEFAULT_LOCAL_MODEL,
       generatedAt: new Date().toISOString(),
-      warnings: options.warnings ?? [],
+      warnings: metaWarnings,
     },
     cv: {
       rawTextLength: normalizedCv.length,
       sections: cvSections,
-      facts: cvFacts,
+      facts: allFacts,
     },
     job: {
       sourceUrl: jobUrl || undefined,
@@ -412,6 +443,38 @@ function extractCandidateFacts(cvText: string, sections: SectionText[]) {
   }
 
   return dedupeByNormalizedText(facts, (fact) => fact.text).slice(0, 160);
+}
+
+function buildUserConfirmedFacts(confirmedEvidence: UserConfirmedEvidence[]) {
+  const facts: CandidateFact[] = [];
+
+  for (const [index, evidence] of confirmedEvidence.entries()) {
+    if (!isMeaningfulUserEvidenceText(evidence.text, evidence.evidenceType)) {
+      continue;
+    }
+
+    const factKind = getUserEvidenceFactKind(evidence.evidenceType, evidence.text);
+    const parsedContext = parseFactContext([evidence.text]);
+
+    facts.push({
+      id: `user_fact_${index + 1}`,
+      source: "user_confirmed",
+      sourceSection: "User-confirmed evidence",
+      text: evidence.text,
+      role: parsedContext.role,
+      company: parsedContext.company,
+      dateRange: parsedContext.dateRange ?? extractDateRange(evidence.text),
+      skills: extractFactKeywords(evidence.text, factKind),
+      tools: extractTools(evidence.text),
+      metrics: extractMetrics(evidence.text),
+      confidence: getUserFactConfidence(evidence.evidenceType, evidence.text),
+      anchors: buildUserEvidenceAnchor(evidence.text, evidence.requirementText),
+      requirementFingerprint: evidence.requirementFingerprint,
+      userEvidenceType: evidence.evidenceType,
+    });
+  }
+
+  return dedupeByNormalizedText(facts, (fact) => fact.text).slice(0, 60);
 }
 
 function extractFactsFromSection(
@@ -576,6 +639,7 @@ function buildFact(
 
   return {
     id: `fact_${factIndex}`,
+    source: "cv",
     sourceSection: sectionLabel,
     text: factText,
     role: parsedContext.role,
@@ -714,6 +778,7 @@ function buildRequirement(rawRequirement: RawRequirement, index: number): JobReq
   return {
     id: `req_${index}`,
     text: rawRequirement.text,
+    fingerprint: buildRequirementFingerprint(rawRequirement.text),
     category,
     importance,
     keywords,
@@ -799,8 +864,8 @@ function buildHardBlockerMatch(
           sameLocation ? "exact" : "phrase",
           sameLocation ? 0.94 : 0.68,
           sameLocation
-            ? `Strong match because the CV explicitly states work authorization${signal.locationPhrase ? ` and references ${signal.locationPhrase}` : ""}.`
-            : "Medium match because the CV explicitly states work authorization, but the location scope is not completely clear.",
+            ? `Strong match because ${describeEvidenceOrigin(fact)} explicitly states work authorization${signal.locationPhrase ? ` and references ${signal.locationPhrase}` : ""}.`
+            : `Medium match because ${describeEvidenceOrigin(fact)} explicitly states work authorization, but the location scope is not completely clear.`,
         );
       }
 
@@ -811,7 +876,7 @@ function buildHardBlockerMatch(
           "weak",
           "inferred",
           0.26,
-          `Weak match because the CV shows location details${signal.locationPhrase ? ` in ${signal.locationPhrase}` : ""}, but location does not prove work authorization.`,
+          `Weak match because ${describeEvidenceOrigin(fact)} shows location details${signal.locationPhrase ? ` in ${signal.locationPhrase}` : ""}, but location does not prove work authorization.`,
         );
       }
 
@@ -836,8 +901,8 @@ function buildHardBlockerMatch(
         "exact",
         strongLanguage ? 0.92 : 0.64,
         strongLanguage
-          ? `Strong match because the CV explicitly states ${requiredLanguage ?? "the required language"} in a language-related fact.`
-          : `Medium match because the CV mentions ${requiredLanguage ?? "the language"}, but the proficiency level is limited or unclear.`,
+          ? `Strong match because ${describeEvidenceOrigin(fact)} explicitly states ${requiredLanguage ?? "the required language"} in a language-related fact.`
+          : `Medium match because ${describeEvidenceOrigin(fact)} mentions ${requiredLanguage ?? "the language"}, but the proficiency level is limited or unclear.`,
       );
     }
 
@@ -853,7 +918,7 @@ function buildHardBlockerMatch(
           "strong",
           "exact",
           0.91,
-          `Strong match because the CV explicitly lists ${exactDegree[0]} in an education fact.`,
+          `Strong match because ${describeEvidenceOrigin(fact)} explicitly lists ${exactDegree[0]} in an education fact.`,
         );
       }
 
@@ -864,7 +929,7 @@ function buildHardBlockerMatch(
           "weak",
           "phrase",
           0.34,
-          `Weak match because the CV lists education credentials, but it does not clearly prove ${signal.explicitDegreeTerms.join(" / ")}.`,
+          `Weak match because ${describeEvidenceOrigin(fact)} lists education credentials, but it does not clearly prove ${signal.explicitDegreeTerms.join(" / ")}.`,
         );
       }
 
@@ -883,7 +948,7 @@ function buildHardBlockerMatch(
           "strong",
           "exact",
           0.9,
-          `Strong match because the CV explicitly mentions ${exactCertification[0]} as a certification.`,
+          `Strong match because ${describeEvidenceOrigin(fact)} explicitly mentions ${exactCertification[0]} as a certification.`,
         );
       }
 
@@ -894,7 +959,7 @@ function buildHardBlockerMatch(
           "weak",
           "phrase",
           0.32,
-          "Weak match because the CV mentions certifications, but the required certification is not explicit.",
+          `Weak match because ${describeEvidenceOrigin(fact)} mentions certifications, but the required certification is not explicit.`,
         );
       }
 
@@ -909,7 +974,7 @@ function buildHardBlockerMatch(
           "strong",
           "exact",
           0.92,
-          "Strong match because the CV explicitly mentions security clearance.",
+          `Strong match because ${describeEvidenceOrigin(fact)} explicitly mentions security clearance.`,
         );
       }
       return null;
@@ -923,7 +988,7 @@ function buildHardBlockerMatch(
           "strong",
           "exact",
           0.89,
-          "Strong match because the CV explicitly mentions a driving license.",
+          `Strong match because ${describeEvidenceOrigin(fact)} explicitly mentions a driving license.`,
         );
       }
       return null;
@@ -937,7 +1002,7 @@ function buildHardBlockerMatch(
           "medium",
           "phrase",
           0.62,
-          "Medium match because the CV explicitly mentions travel-related availability or travel-heavy work.",
+          `Medium match because ${describeEvidenceOrigin(fact)} explicitly mentions travel-related availability or travel-heavy work.`,
         );
       }
       return null;
@@ -951,7 +1016,7 @@ function buildHardBlockerMatch(
           "medium",
           "phrase",
           0.62,
-          "Medium match because the CV explicitly mentions timezone or shift availability.",
+          `Medium match because ${describeEvidenceOrigin(fact)} explicitly mentions timezone or shift availability.`,
         );
       }
       return null;
@@ -969,7 +1034,7 @@ function buildHardBlockerMatch(
           "strong",
           "exact",
           0.86,
-          `Strong match because the CV explicitly lists ${signal.locationPhrase ?? "the required location"}.`,
+          `Strong match because ${describeEvidenceOrigin(fact)} explicitly lists ${signal.locationPhrase ?? "the required location"}.`,
         );
       }
 
@@ -980,7 +1045,7 @@ function buildHardBlockerMatch(
           "weak",
           "phrase",
           0.32,
-          `Weak match because the CV references part of the required location${signal.locationPhrase ? ` (${signal.locationPhrase})` : ""}, but the match is incomplete.`,
+          `Weak match because ${describeEvidenceOrigin(fact)} references part of the required location${signal.locationPhrase ? ` (${signal.locationPhrase})` : ""}, but the match is incomplete.`,
         );
       }
 
@@ -996,7 +1061,7 @@ function buildHardBlockerMatch(
         "weak",
         overlap.weakSynonymMatches.length ? "synonym" : "phrase",
         0.28,
-        `Weak match because the CV contains related terms for this hard blocker, but the requirement is not explicitly proven.`,
+        `Weak match because ${describeEvidenceOrigin(fact)} contains related terms for this hard blocker, but the requirement is not explicitly proven.`,
       );
     }
   }
@@ -1029,7 +1094,7 @@ function assessYearsEvidence(
       fact.factKind === "experience" || fact.factKind === "project" ? "weak" : "weak",
       "inferred",
       0.3,
-      `Weak match because the CV has related ${fact.factKind} evidence, but it does not clearly prove ${signal.requiredYears}+ years.`,
+      `Weak match because ${describeEvidenceOrigin(fact)} has related ${fact.factKind} evidence, but it does not clearly prove ${signal.requiredYears}+ years.`,
     );
   }
 
@@ -1043,7 +1108,7 @@ function assessYearsEvidence(
       "strong",
       explicitYears ? "exact" : "inferred",
       0.91,
-      `Strong match because the CV shows ${formatYears(bestYears)} of related experience and the fact aligns with ${summarizeRequirementDomain(requirement)}.`,
+      `Strong match because ${describeEvidenceOrigin(fact)} shows ${formatYears(bestYears)} of related experience and the fact aligns with ${summarizeRequirementDomain(requirement)}.`,
     );
   }
 
@@ -1054,7 +1119,7 @@ function assessYearsEvidence(
       "medium",
       explicitYears ? "exact" : "inferred",
       0.67,
-      `Medium match because the CV appears to show ${formatYears(bestYears)} of related experience, but the domain wording is only partially aligned.`,
+      `Medium match because ${describeEvidenceOrigin(fact)} appears to show ${formatYears(bestYears)} of related experience, but the domain wording is only partially aligned.`,
     );
   }
 
@@ -1065,7 +1130,7 @@ function assessYearsEvidence(
       "weak",
       explicitYears ? "exact" : "inferred",
       0.36,
-      `Weak match because the CV shows only ${formatYears(bestYears)} against a ${signal.requiredYears}+ year requirement.`,
+      `Weak match because ${describeEvidenceOrigin(fact)} shows only ${formatYears(bestYears)} against a ${signal.requiredYears}+ year requirement.`,
     );
   }
 
@@ -1075,7 +1140,7 @@ function assessYearsEvidence(
     "weak",
     "inferred",
     0.34,
-    `Weak match because the dates suggest related experience, but the evidence is not specific enough to prove ${signal.requiredYears}+ years.`,
+    `Weak match because the dates suggest related experience, but ${describeEvidenceOrigin(fact)} is not specific enough to prove ${signal.requiredYears}+ years.`,
   );
 }
 
@@ -1168,6 +1233,16 @@ function buildGeneralMatch(
     strength = "weak";
   }
 
+  if (fact.source === "user_confirmed") {
+    if (strength === "strong" && !canUserEvidenceBeStrong(requirement, fact, overlap)) {
+      strength = "medium";
+    }
+
+    if (strength === "medium" && !canUserEvidenceBeMedium(requirement, fact, overlap)) {
+      strength = "weak";
+    }
+  }
+
   const matchType = determineMatchType(overlap);
   const score = computeMatchScore(strength, overlap, fact, hasOnlyWeakSynonyms);
 
@@ -1211,25 +1286,27 @@ function buildConfidenceReason(
   evidenceStatus: EvidenceStatus,
 ) {
   const bestMatch = matches[0];
+  const bestSourceLabel =
+    bestMatch?.evidenceSource === "user_confirmed" ? "user-confirmed evidence" : "the CV";
 
   if (evidenceStatus === "supported" && bestMatch) {
-    return `${capitalize(bestMatch.strength)} evidence from the ${bestMatch.anchors[0]?.section ?? "CV"} section supports this requirement. ${bestMatch.explanation}`;
+    return `${capitalize(bestMatch.strength)} evidence from ${bestSourceLabel} supports this requirement. ${bestMatch.explanation}`;
   }
 
   if (signal.hardBlockerKind) {
     if (bestMatch) {
-      return `Blocked because the job requires explicit ${describeHardBlocker(signal.hardBlockerKind, requirement.text)}, and the current CV evidence is only partial. ${bestMatch.explanation}`;
+      return `Blocked because the job requires explicit ${describeHardBlocker(signal.hardBlockerKind, requirement.text)}, and the current evidence is only partial. ${bestMatch.explanation}`;
     }
 
-    return `Blocked because the job requires explicit ${describeHardBlocker(signal.hardBlockerKind, requirement.text)} and the CV does not clearly state it.`;
+    return `Blocked because the job requires explicit ${describeHardBlocker(signal.hardBlockerKind, requirement.text)} and neither the CV nor any explicit user confirmation clearly states it.`;
   }
 
   if (signal.requiredYears) {
     if (bestMatch) {
-      return `Weak because the CV has related evidence, but it does not clearly prove ${signal.requiredYears}+ years for ${summarizeRequirementDomain(requirement)}.`;
+      return `Weak because the available evidence is related, but it does not clearly prove ${signal.requiredYears}+ years for ${summarizeRequirementDomain(requirement)}.`;
     }
 
-    return `Missing because no CV fact clearly proves ${signal.requiredYears}+ years for ${summarizeRequirementDomain(requirement)}.`;
+    return `Missing because no anchored fact clearly proves ${signal.requiredYears}+ years for ${summarizeRequirementDomain(requirement)}.`;
   }
 
   if (bestMatch) {
@@ -1503,7 +1580,7 @@ function computeScoring(
 }
 
 function indexFact(fact: CandidateFact): IndexedFact {
-  const factKind = getFactKind(fact.sourceSection);
+  const factKind = getFactKindForFact(fact);
   const combinedText = [
     fact.text,
     fact.role,
@@ -1619,6 +1696,7 @@ function createMatch(
     id: `${requirement.id}_${fact.id}`,
     requirementId: requirement.id,
     factId: fact.id,
+    evidenceSource: fact.source,
     matchedText: fact.text,
     matchType,
     strength,
@@ -1652,9 +1730,18 @@ function computeMatchScore(
   const weakPenalty = hasOnlyWeakSynonyms ? 0.08 : 0;
   const summaryPenalty = fact.factKind === "summary" ? 0.1 : 0;
   const skillsPenalty = fact.factKind === "skills" ? 0.05 : 0;
+  const userEvidencePenalty = fact.source === "user_confirmed" ? 0.06 : 0;
 
   return clamp(
-    base + overlapBonus + phraseBonus + toolBonus + fact.sectionWeight - weakPenalty - summaryPenalty - skillsPenalty,
+    base +
+      overlapBonus +
+      phraseBonus +
+      toolBonus +
+      fact.sectionWeight -
+      weakPenalty -
+      summaryPenalty -
+      skillsPenalty -
+      userEvidencePenalty,
     0,
     0.99,
   );
@@ -1675,28 +1762,93 @@ function buildGeneralMatchExplanation(
   const preview = uniqueStrings(matchedTerms).slice(0, 3).join(", ");
 
   if (overlap.weakSynonymMatches.length && !overlap.specificOverlap.length) {
-    return `Weak match because the CV only shows related terms such as ${preview}, not the exact requirement wording.`;
+    return `Weak match because ${describeEvidenceOrigin(fact)} only shows related terms such as ${preview}, not the exact requirement wording.`;
   }
 
   if (fact.factKind === "skills") {
     return requirement.category === "tool"
-      ? `Medium match because ${preview || "the tool"} appears in the Skills section, but there is limited experience-context evidence.`
-      : `Weak match because the CV mentions ${preview || "related terms"} in Skills only, without enough experience-context evidence.`;
+      ? `Medium match because ${preview || "the tool"} appears in ${describeSkillsEvidenceOrigin(fact)}, but there is limited experience-context evidence.`
+      : `Weak match because ${describeEvidenceOrigin(fact)} mentions ${preview || "related terms"} in skills-only evidence, without enough experience-context support.`;
   }
 
   if (fact.factKind === "summary") {
-    return `Weak match because the CV summary mentions ${preview || "related terms"}, but summary-only wording is not enough for strong proof.`;
+    return `Weak match because ${describeEvidenceOrigin(fact)} mentions ${preview || "related terms"} in summary-style wording, which is not enough for strong proof.`;
   }
 
   if (strength === "strong") {
-    return `Strong match because the CV explicitly mentions ${preview || "the required terms"} in a ${capitalize(fact.factKind)} fact.`;
+    return `Strong match because ${describeEvidenceOrigin(fact)} explicitly mentions ${preview || "the required terms"} in a ${capitalize(fact.factKind)} fact.`;
   }
 
   if (strength === "medium") {
-    return `Medium match because the CV shows ${preview || "related terms"} in a ${capitalize(fact.factKind)} fact, but the context is narrower than the job requirement.`;
+    return `Medium match because ${describeEvidenceOrigin(fact)} shows ${preview || "related terms"} in a ${capitalize(fact.factKind)} fact, but the context is narrower than the job requirement.`;
   }
 
-  return `Weak match because the CV only partially overlaps with ${preview || "the requirement wording"}.`;
+  return `Weak match because ${describeEvidenceOrigin(fact)} only partially overlaps with ${preview || "the requirement wording"}.`;
+}
+
+function canUserEvidenceBeStrong(
+  requirement: JobRequirement,
+  fact: IndexedFact,
+  overlap: OverlapAnalysis,
+) {
+  if (!hasProfessionalContext(fact.text)) {
+    return false;
+  }
+
+  if (fact.userEvidenceType === "skill" || fact.factKind === "skills") {
+    return false;
+  }
+
+  if (requirement.category === "responsibility") {
+    return (
+      (fact.factKind === "experience" || fact.factKind === "project") &&
+      overlap.phraseMatches.length > 0 &&
+      overlap.specificOverlap.length >= 2
+    );
+  }
+
+  if (requirement.category === "tool") {
+    return overlap.toolMatches.length > 0 && overlap.specificOverlap.length >= 2;
+  }
+
+  if (requirement.category === "soft_skill") {
+    return false;
+  }
+
+  return overlap.specificOverlap.length >= 2 && overlap.phraseMatches.length > 0;
+}
+
+function canUserEvidenceBeMedium(
+  requirement: JobRequirement,
+  fact: IndexedFact,
+  overlap: OverlapAnalysis,
+) {
+  if (fact.userEvidenceType === "skill" && requirement.category === "responsibility") {
+    return false;
+  }
+
+  if (fact.userEvidenceType === "other" && !hasProfessionalContext(fact.text)) {
+    return false;
+  }
+
+  return (
+    overlap.specificOverlap.length > 0 ||
+    overlap.toolMatches.length > 0 ||
+    overlap.weakSynonymMatches.length > 0 ||
+    hasProfessionalContext(fact.text)
+  );
+}
+
+function describeEvidenceOrigin(fact: IndexedFact) {
+  return fact.source === "user_confirmed"
+    ? "the user-confirmed evidence"
+    : "the CV";
+}
+
+function describeSkillsEvidenceOrigin(fact: IndexedFact) {
+  return fact.source === "user_confirmed"
+    ? "the user-confirmed evidence"
+    : "the CV Skills section";
 }
 
 function sortMatches(a: EvidenceMatch, b: EvidenceMatch) {
@@ -1722,6 +1874,39 @@ function getFactKind(sectionLabel: string): FactKind {
   if (SUMMARY_SECTIONS.has(normalized)) return "summary";
   if (HEADER_SECTIONS.has(normalized)) return "header";
   return "other";
+}
+
+function getFactKindForFact(fact: CandidateFact): FactKind {
+  if (fact.source === "user_confirmed") {
+    return getUserEvidenceFactKind(fact.userEvidenceType, fact.text);
+  }
+
+  return getFactKind(fact.sourceSection);
+}
+
+function getUserEvidenceFactKind(
+  evidenceType?: UserEvidenceType,
+  text = "",
+): FactKind {
+  switch (evidenceType) {
+    case "experience":
+      return hasProfessionalContext(text) ? "experience" : "summary";
+    case "tool":
+    case "skill":
+      return hasProfessionalContext(text) ? "experience" : "skills";
+    case "certification":
+      return "certification";
+    case "education":
+      return "education";
+    case "language":
+      return "language";
+    case "location":
+    case "availability":
+    case "work_authorization":
+      return "other";
+    default:
+      return hasProfessionalContext(text) ? "experience" : "other";
+  }
 }
 
 function getJobSectionIntent(label: string, text: string): SectionIntent {
@@ -1992,6 +2177,12 @@ function deriveYearsFromDateRange(dateRange?: string) {
   return endYear - startYear + (lower.includes("present") ? 1 : 0);
 }
 
+function hasProfessionalContext(text: string) {
+  return /\b(company|client|project|product|role|team|customer|used|built|managed|supported|implemented|delivered|owned|led|worked)\b/i.test(
+    text,
+  );
+}
+
 function getFactConfidence(factKind: FactKind, text: string) {
   if (factKind === "experience" || factKind === "project") {
     return text.length > 30 ? 0.9 : 0.84;
@@ -2003,6 +2194,33 @@ function getFactConfidence(factKind: FactKind, text: string) {
   }
   if (factKind === "header") return 0.66;
   return 0.68;
+}
+
+function getUserFactConfidence(evidenceType: UserEvidenceType, text: string) {
+  const explicit =
+    evidenceType === "work_authorization"
+      ? AUTHORIZATION_PATTERNS.some((pattern) => pattern.test(text))
+      : evidenceType === "language"
+        ? LANGUAGE_PROFICIENCY_PATTERNS.some((pattern) => pattern.test(text))
+        : evidenceType === "certification"
+          ? /cert|license|clearance/i.test(text)
+          : evidenceType === "education"
+            ? /degree|bachelor|master|phd|diploma/i.test(text)
+            : hasProfessionalContext(text);
+
+  if (evidenceType === "work_authorization" || evidenceType === "language") {
+    return explicit ? 0.74 : 0.48;
+  }
+
+  if (evidenceType === "certification" || evidenceType === "education") {
+    return explicit ? 0.72 : 0.52;
+  }
+
+  if (evidenceType === "experience" || evidenceType === "tool") {
+    return explicit ? 0.68 : 0.5;
+  }
+
+  return explicit ? 0.64 : 0.48;
 }
 
 function getSectionWeight(factKind: FactKind) {

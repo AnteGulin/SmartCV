@@ -15,7 +15,27 @@ export function isPhase1AnalysisResult(
     result.meta?.version === "phase1.v1" &&
     Array.isArray(result.cv?.sections) &&
     Array.isArray(result.cv?.facts) &&
+    result.cv.facts.every(
+      (fact) =>
+        fact &&
+        typeof fact === "object" &&
+        (fact.source === "cv" || fact.source === "user_confirmed"),
+    ) &&
     Array.isArray(result.job?.requirements) &&
+    result.job.requirements.every(
+      (requirement) =>
+        requirement &&
+        typeof requirement === "object" &&
+        typeof requirement.fingerprint === "string" &&
+        Array.isArray(requirement.matchedEvidence) &&
+        requirement.matchedEvidence.every(
+          (match) =>
+            match &&
+            typeof match === "object" &&
+            (match.evidenceSource === "cv" ||
+              match.evidenceSource === "user_confirmed"),
+        ),
+    ) &&
     Array.isArray(result.ats?.warnings)
   );
 }

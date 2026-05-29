@@ -1,4 +1,5 @@
 export type AnalyzerMode = "local" | "openai";
+export type EvidenceSource = "cv" | "user_confirmed";
 
 export type RequirementCategory =
   | "must_have"
@@ -25,12 +26,24 @@ export type MatchType =
 export type EvidenceStrength = "strong" | "medium" | "weak";
 
 export type AtsSeverity = "info" | "warning" | "critical";
+export type UserEvidenceType =
+  | "experience"
+  | "skill"
+  | "tool"
+  | "certification"
+  | "education"
+  | "language"
+  | "work_authorization"
+  | "location"
+  | "availability"
+  | "other";
 
 export type AnalyzeRequest = {
   cvText: string;
   jobText: string;
   jobUrl?: string;
   forceLocal?: boolean;
+  confirmedEvidence?: UserConfirmedEvidence[];
 };
 
 export interface SectionText {
@@ -39,15 +52,27 @@ export interface SectionText {
 }
 
 export interface TextAnchor {
-  document: "cv" | "job";
+  document: "cv" | "job" | "user";
   section?: string;
   snippet: string;
   start: number;
   end: number;
 }
 
+export interface UserConfirmedEvidence {
+  id: string;
+  requirementId?: string;
+  requirementText: string;
+  requirementFingerprint: string;
+  evidenceType: UserEvidenceType;
+  text: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface CandidateFact {
   id: string;
+  source: EvidenceSource;
   sourceSection: string;
   text: string;
   role?: string;
@@ -58,12 +83,15 @@ export interface CandidateFact {
   metrics: string[];
   confidence: number;
   anchors: TextAnchor[];
+  requirementFingerprint?: string;
+  userEvidenceType?: UserEvidenceType;
 }
 
 export interface EvidenceMatch {
   id: string;
   requirementId: string;
   factId: string;
+  evidenceSource: EvidenceSource;
   matchedText: string;
   matchType: MatchType;
   strength: EvidenceStrength;
@@ -75,6 +103,7 @@ export interface EvidenceMatch {
 export interface JobRequirement {
   id: string;
   text: string;
+  fingerprint: string;
   category: RequirementCategory;
   importance: 1 | 2 | 3 | 4 | 5;
   keywords: string[];

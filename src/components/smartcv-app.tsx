@@ -21,14 +21,26 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { AtsHygienePanel } from "@/components/ats-hygiene-panel";
 import {
+  EvidenceConfirmationPanel,
+  type ConfirmationDraft,
+} from "@/components/evidence-confirmation-panel";
+import {
   RequirementEvidenceMap,
   type RequirementFilter,
 } from "@/components/requirement-evidence-map";
 import { isPhase1AnalysisResult } from "@/lib/analysis-validation";
 import { splitTextIntoSections } from "@/lib/analysis-utils";
+import {
+  buildRequirementFingerprint,
+  CONFIRMED_EVIDENCE_STORAGE_KEY,
+  createUserConfirmedEvidenceId,
+  sanitizeUserConfirmedEvidence,
+} from "@/lib/user-evidence";
 import type {
   Phase1AnalysisResult,
   SectionText,
+  UserConfirmedEvidence,
+  UserEvidenceType,
 } from "@/lib/types";
 
 type CvEditorMode = "sections" | "full";
@@ -113,6 +125,10 @@ export function SmartCvApp() {
   const [result, setResult] = useState<Phase1AnalysisResult | null>(null);
   const [requirementFilter, setRequirementFilter] =
     useState<RequirementFilter>("all");
+  const [confirmedEvidence, setConfirmedEvidence] = useState<UserConfirmedEvidence[]>([]);
+  const [confirmationDrafts, setConfirmationDrafts] = useState<
+    Record<string, ConfirmationDraft>
+  >({});
   const [hasHydrated, setHasHydrated] = useState(false);
 
   const canAnalyze = cvText.trim().length > 80 && jobText.trim().length > 80;
@@ -135,9 +151,39 @@ export function SmartCvApp() {
     };
   }, [result]);
 
+  const currentRequirementFingerprints = useMemo(
+    () =>
+      new Set(
+        result?.job.requirements.map((requirement) => requirement.fingerprint) ?? [],
+      ),
+    [result],
+  );
+
+  const appliedConfirmationCount = useMemo(
+    () =>
+      result
+        ? result.job.requirements.filter(
+            (requirement) =>
+              requirement.matchedEvidence[0]?.evidenceSource === "user_confirmed",
+          ).length
+        : 0,
+    [result],
+  );
+
+  const staleConfirmationCount = useMemo(
+    () =>
+      confirmedEvidence.filter(
+        (item) => !currentRequirementFingerprints.has(item.requirementFingerprint),
+      ).length,
+    [confirmedEvidence, currentRequirementFingerprints],
+  );
+
   useEffect(() => {
     const timeout = window.setTimeout(() => {
       const stored = window.localStorage.getItem(storageKey);
+      const storedConfirmedEvidence = window.localStorage.getItem(
+        CONFIRMED_EVIDENCE_STORAGE_KEY,
+      );
 
       if (stored) {
         try {
@@ -184,6 +230,16 @@ export function SmartCvApp() {
         }
       }
 
+      if (storedConfirmedEvidence) {
+        try {
+          setConfirmedEvidence(
+            sanitizeUserConfirmedEvidence(JSON.parse(storedConfirmedEvidence)),
+          );
+        } catch {
+          window.localStorage.removeItem(CONFIRMED_EVIDENCE_STORAGE_KEY);
+        }
+      }
+
       setHasHydrated(true);
     }, 0);
 
@@ -219,6 +275,15 @@ export function SmartCvApp() {
     requirementFilter,
     result,
   ]);
+
+  useEffect(() => {
+    if (!hasHydrated) return;
+
+    window.localStorage.setItem(
+      CONFIRMED_EVIDENCE_STORAGE_KEY,
+      JSON.stringify(confirmedEvidence),
+    );
+  }, [confirmedEvidence, hasHydrated]);
 
   async function fetchJobText() {
     if (!jobUrl.trim()) return;
@@ -312,6 +377,7 @@ export function SmartCvApp() {
           jobText,
           jobUrl,
           forceLocal,
+          confirmedEvidence,
         }),
       });
       const payload = await response.json();
@@ -346,6 +412,7 @@ export function SmartCvApp() {
 
   function clearInputs() {
     window.localStorage.removeItem(storageKey);
+    window.localStorage.removeItem(CONFIRMED_EVIDENCE_STORAGE_KEY);
     setCvText("");
     setJobText("");
     setJobUrl("");
@@ -355,6 +422,8 @@ export function SmartCvApp() {
     setParsedCvSections([]);
     setResult(null);
     setRequirementFilter("all");
+    setConfirmedEvidence([]);
+    setConfirmationDrafts({});
     setError("");
   }
 
@@ -376,6 +445,90 @@ export function SmartCvApp() {
   const cvSectionLabels = result
     ? [...new Set(result.cv.sections.map((section) => section.label))].slice(0, 6)
     : [];
+  const cvFactCount = result
+    ? result.cv.facts.filter((fact) => fact.source === "cv").length
+    : 0;
+  const userFactCount = result
+    ? result.cv.facts.filter((fact) => fact.source === "user_confirmed").length
+    : 0;
+
+  function updateConfirmationDraft(
+    requirementFingerprint: string,
+    nextDraft: ConfirmationDraft,
+  ) {
+    setConfirmationDrafts((current) => ({
+      ...current,
+      [requirementFingerprint]: nextDraft,
+    }));
+  }
+
+  function saveConfirmedEvidence(
+    requirementId: string | undefined,
+    requirementText: string,
+    evidenceType: UserEvidenceType,
+    text: string,
+  ) {
+    const normalizedText = text.trim();
+    const requirementFingerprint = buildRequirementFingerprint(requirementText);
+
+    if (!requirementFingerprint || !normalizedText) {
+      return;
+    }
+
+    setConfirmedEvidence((current) => {
+      const existing = current.find(
+        (item) => item.requirementFingerprint === requirementFingerprint,
+      );
+      const timestamp = new Date().toISOString();
+
+      if (existing) {
+        return current.map((item) =>
+          item.requirementFingerprint === requirementFingerprint
+            ? {
+                ...item,
+                requirementId,
+                requirementText,
+                evidenceType,
+                text: normalizedText,
+                updatedAt: timestamp,
+              }
+            : item,
+        );
+      }
+
+      return [
+        ...current,
+        {
+          id: createUserConfirmedEvidenceId(),
+          requirementId,
+          requirementText,
+          requirementFingerprint,
+          evidenceType,
+          text: normalizedText,
+          createdAt: timestamp,
+        },
+      ];
+    });
+
+    setConfirmationDrafts((current) => ({
+      ...current,
+      [requirementFingerprint]: {
+        evidenceType,
+        text: normalizedText,
+      },
+    }));
+  }
+
+  function removeConfirmedEvidence(requirementFingerprint: string) {
+    setConfirmedEvidence((current) =>
+      current.filter((item) => item.requirementFingerprint !== requirementFingerprint),
+    );
+    setConfirmationDrafts((current) => {
+      const nextDrafts = { ...current };
+      delete nextDrafts[requirementFingerprint];
+      return nextDrafts;
+    });
+  }
 
   return (
     <div className="min-h-screen bg-[#f5f7f4] text-zinc-950">
@@ -564,11 +717,23 @@ export function SmartCvApp() {
             />
 
             {result ? (
-              <RequirementEvidenceMap
-                requirements={result.job.requirements}
-                filter={requirementFilter}
-                onFilterChange={setRequirementFilter}
-              />
+              <>
+                <RequirementEvidenceMap
+                  requirements={result.job.requirements}
+                  filter={requirementFilter}
+                  onFilterChange={setRequirementFilter}
+                />
+                <EvidenceConfirmationPanel
+                  requirements={result.job.requirements}
+                  confirmedEvidence={confirmedEvidence}
+                  drafts={confirmationDrafts}
+                  isAnalyzing={loading}
+                  onDraftChange={updateConfirmationDraft}
+                  onRemove={removeConfirmedEvidence}
+                  onRunAnalysis={analyze}
+                  onSave={saveConfirmedEvidence}
+                />
+              </>
             ) : null}
           </div>
         </section>
@@ -610,8 +775,12 @@ export function SmartCvApp() {
 
                 <SummaryCard title="CV facts">
                   <SummaryLine
-                    label="Facts extracted"
-                    value={String(result.cv.facts.length)}
+                    label="Original CV facts"
+                    value={String(cvFactCount)}
+                  />
+                  <SummaryLine
+                    label="User-confirmed facts"
+                    value={String(userFactCount)}
                   />
                   <SummaryLine
                     label="Main sections"
@@ -636,6 +805,21 @@ export function SmartCvApp() {
                   <SummaryLine
                     label="Blocked"
                     value={String(statusCounts.blocked)}
+                  />
+                </SummaryCard>
+
+                <SummaryCard title="User confirmations">
+                  <SummaryLine
+                    label="Saved confirmations"
+                    value={String(confirmedEvidence.length)}
+                  />
+                  <SummaryLine
+                    label="Applied to this job"
+                    value={String(appliedConfirmationCount)}
+                  />
+                  <SummaryLine
+                    label="Unmatched to this job"
+                    value={String(staleConfirmationCount)}
                   />
                 </SummaryCard>
 
@@ -926,8 +1110,8 @@ function RightStartPanel() {
       </div>
       <p className="text-sm leading-6 text-zinc-600">
         Analyze the master CV against a job posting to extract requirements,
-        map them to grounded CV evidence, surface gaps, and flag ATS hygiene
-        risks.
+        map them to grounded evidence, surface gaps, collect truthful user
+        confirmations, and flag ATS hygiene risks.
       </p>
     </div>
   );
@@ -938,7 +1122,7 @@ function WorkspaceGuide() {
     <div className="rounded-md border border-zinc-200 bg-white p-4">
       <div className="mb-3 flex items-center gap-2">
         <ShieldCheck className="h-5 w-5 text-emerald-700" aria-hidden="true" />
-        <h2 className="text-base font-semibold">Phase 1A flow</h2>
+        <h2 className="text-base font-semibold">Phase 2 flow</h2>
       </div>
       <div className="space-y-3">
         <MiniStep
@@ -952,6 +1136,10 @@ function WorkspaceGuide() {
         <MiniStep
           title="3. Match"
           text="Each requirement is marked as supported, weak, missing, or blocked."
+        />
+        <MiniStep
+          title="4. Confirm"
+          text="Add truthful evidence for weak, missing, or blocked requirements and re-run the analysis."
         />
       </div>
     </div>

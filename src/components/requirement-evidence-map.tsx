@@ -107,6 +107,11 @@ export function RequirementEvidenceMap({
                         <div className="font-medium text-zinc-800">
                           {titleCase(bestEvidence.strength)} match
                         </div>
+                        <div>
+                          {bestEvidence.evidenceSource === "user_confirmed"
+                            ? "Source: User confirmation"
+                            : "Source: CV"}
+                        </div>
                         <div>{Math.round(bestEvidence.score * 100)} score</div>
                       </>
                     ) : (
@@ -120,6 +125,11 @@ export function RequirementEvidenceMap({
                     <div className="rounded-md border border-zinc-200 bg-white p-3">
                       <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-zinc-500">
                         Best evidence
+                      </div>
+                      <div className="mb-2 inline-flex rounded bg-zinc-100 px-2 py-1 text-xs font-medium text-zinc-700">
+                        {bestEvidence.evidenceSource === "user_confirmed"
+                          ? "User-confirmed evidence"
+                          : "Original CV evidence"}
                       </div>
                       <p className="whitespace-pre-wrap text-sm leading-6 text-zinc-800">
                         {bestEvidence.matchedText}
