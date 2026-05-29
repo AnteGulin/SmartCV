@@ -1,6 +1,7 @@
 "use client";
 
 import { Copy, Loader2, Search, Sparkles, Wand2 } from "lucide-react";
+import type { ReactNode } from "react";
 import { DraftItemAuditDetails } from "@/components/draft-item-audit";
 import { DraftValidationPanel } from "@/components/draft-validation-panel";
 import {
@@ -20,6 +21,7 @@ export function TailoredDraftPanel({
   draftLoading,
   draftViewMode,
   expandedAuditItemIds,
+  exportPanel,
   polishEligibleCount,
   polishError,
   polishLoading,
@@ -36,6 +38,7 @@ export function TailoredDraftPanel({
   draftLoading: boolean;
   draftViewMode: DraftViewMode;
   expandedAuditItemIds: string[];
+  exportPanel?: ReactNode;
   polishEligibleCount: number;
   polishError: string;
   polishLoading: boolean;
@@ -205,6 +208,8 @@ export function TailoredDraftPanel({
               ) : null,
             )}
           </div>
+
+          {exportPanel}
         </div>
       ) : (
         <div className="rounded-md border border-dashed border-zinc-300 bg-zinc-50 p-5 text-sm leading-6 text-zinc-600">

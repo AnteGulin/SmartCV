@@ -24,6 +24,7 @@ import {
   EvidenceConfirmationPanel,
   type ConfirmationDraft,
 } from "@/components/evidence-confirmation-panel";
+import { ExportPanel } from "@/components/export-panel";
 import {
   RequirementEvidenceMap,
   type RequirementFilter,
@@ -40,6 +41,12 @@ import {
   buildTailorInputSignature,
 } from "@/lib/draft-composer";
 import {
+  buildExportPreview,
+  buildExportPreviewSignature,
+  collectValidatedExportPolishedItems,
+} from "@/lib/export-model";
+import { validateExportPreview } from "@/lib/export-validation";
+import {
   countEligibleDraftPolishItems,
   getEligibleDraftPolishItemIds,
 } from "@/lib/draft-validation";
@@ -50,6 +57,9 @@ import {
   sanitizeUserConfirmedEvidence,
 } from "@/lib/user-evidence";
 import type {
+  ExportFormat,
+  ExportPreview,
+  ExportValidationResult,
   Phase1AnalysisResult,
   SectionText,
   TailoredDraftResult,
@@ -74,6 +84,9 @@ type StoredWorkspace = {
   tailoredDraftPolishSignature: string | null;
   draftViewMode?: DraftViewMode;
   expandedDraftAuditItemIds?: string[];
+  exportPreviewOpen?: boolean;
+  exportFormatPreference?: ExportFormat;
+  exportBlockedAckSignature?: string | null;
   requirementFilter: RequirementFilter;
   savedAt: string;
 };
@@ -163,7 +176,15 @@ export function SmartCvApp() {
   const [expandedDraftAuditItemIds, setExpandedDraftAuditItemIds] = useState<string[]>(
     [],
   );
+  const [exportPreviewOpen, setExportPreviewOpen] = useState(true);
+  const [exportFormatPreference, setExportFormatPreference] =
+    useState<ExportFormat | null>(null);
+  const [exportBlockedAckSignature, setExportBlockedAckSignature] = useState<
+    string | null
+  >(null);
   const [copiedDraft, setCopiedDraft] = useState(false);
+  const [docxExportLoading, setDocxExportLoading] = useState(false);
+  const [exportError, setExportError] = useState("");
   const [hasHydrated, setHasHydrated] = useState(false);
 
   const canAnalyze = cvText.trim().length > 80 && jobText.trim().length > 80;
@@ -313,6 +334,21 @@ export function SmartCvApp() {
                 )
               : [],
           );
+          setExportPreviewOpen(
+            typeof workspace.exportPreviewOpen === "boolean"
+              ? workspace.exportPreviewOpen
+              : true,
+          );
+          setExportFormatPreference(
+            isExportFormat(workspace.exportFormatPreference)
+              ? workspace.exportFormatPreference
+              : null,
+          );
+          setExportBlockedAckSignature(
+            typeof workspace.exportBlockedAckSignature === "string"
+              ? workspace.exportBlockedAckSignature
+              : null,
+          );
           setRequirementFilter(
             isRequirementFilter(workspace.requirementFilter)
               ? workspace.requirementFilter
@@ -346,6 +382,9 @@ export function SmartCvApp() {
       tailoredDraftPolishSignature,
       draftViewMode,
       expandedDraftAuditItemIds,
+      exportPreviewOpen,
+      exportFormatPreference: exportFormatPreference ?? undefined,
+      exportBlockedAckSignature,
       requirementFilter,
       savedAt: new Date().toISOString(),
     };
@@ -356,6 +395,9 @@ export function SmartCvApp() {
     cvFileName,
     cvText,
     draftViewMode,
+    exportBlockedAckSignature,
+    exportFormatPreference,
+    exportPreviewOpen,
     forceLocal,
     expandedDraftAuditItemIds,
     hasHydrated,
@@ -383,8 +425,11 @@ export function SmartCvApp() {
     setTailoredDraftSignature(null);
     setTailoredDraftPolishSignature(null);
     setExpandedDraftAuditItemIds([]);
+    setExportBlockedAckSignature(null);
     setCopiedDraft(false);
     setDraftError("");
+    setExportError("");
+    setDocxExportLoading(false);
     setPolishError("");
     setPolishLoading(false);
   }
@@ -533,6 +578,9 @@ export function SmartCvApp() {
     setRequirementFilter("all");
     setConfirmedEvidence([]);
     setConfirmationDrafts({});
+    setExportPreviewOpen(true);
+    setExportFormatPreference(null);
+    setExportBlockedAckSignature(null);
     setError("");
   }
 
@@ -577,6 +625,28 @@ export function SmartCvApp() {
   const draftAudit = useMemo<DraftAuditResult | null>(
     () => (tailoredDraft ? buildDraftAudit(tailoredDraft) : null),
     [tailoredDraft],
+  );
+  const exportPreview = useMemo<ExportPreview | null>(
+    () => (tailoredDraft ? buildExportPreview(tailoredDraft) : null),
+    [tailoredDraft],
+  );
+  const exportPreviewSignature = useMemo(
+    () => (exportPreview ? buildExportPreviewSignature(exportPreview) : null),
+    [exportPreview],
+  );
+  const hasBlockedExportAcknowledgement = Boolean(
+    exportPreviewSignature &&
+      exportBlockedAckSignature &&
+      exportBlockedAckSignature === exportPreviewSignature,
+  );
+  const exportValidation = useMemo<ExportValidationResult | null>(
+    () =>
+      tailoredDraft && exportPreview
+        ? validateExportPreview(tailoredDraft, exportPreview, {
+            acknowledgedBlockedDraft: hasBlockedExportAcknowledgement,
+          })
+        : null,
+    [exportPreview, hasBlockedExportAcknowledgement, tailoredDraft],
   );
   const includedDraftItemCount = draftAudit?.summary.includedInCopyCount ?? 0;
   const excludedDraftItemCount = draftAudit?.summary.excludedCount ?? 0;
@@ -698,6 +768,9 @@ export function SmartCvApp() {
       setTailoredDraftSignature(tailorInputSignature);
       setTailoredDraftPolishSignature(null);
       setExpandedDraftAuditItemIds([]);
+      setExportPreviewOpen(true);
+      setExportBlockedAckSignature(null);
+      setExportError("");
       setCopiedDraft(false);
     } catch (reason) {
       setDraftError(
@@ -772,6 +845,9 @@ export function SmartCvApp() {
       setExpandedDraftAuditItemIds((current) =>
         current.filter((itemId) => polishedDraftItemIds.has(itemId)),
       );
+      setExportPreviewOpen(true);
+      setExportBlockedAckSignature(null);
+      setExportError("");
       setCopiedDraft(false);
     } catch (reason) {
       setPolishError(
@@ -794,6 +870,137 @@ export function SmartCvApp() {
     } catch {
       setDraftError("Could not copy the validated draft to the clipboard.");
     }
+  }
+
+  function setBlockedExportAcknowledgement(checked: boolean) {
+    setExportBlockedAckSignature(
+      checked && exportPreviewSignature ? exportPreviewSignature : null,
+    );
+  }
+
+  function ensureExportReady() {
+    if (!tailoredDraft || !exportPreview || !exportValidation) {
+      setExportError("Generate a tailored draft before exporting.");
+      return null;
+    }
+
+    if (!exportValidation.canExport) {
+      setExportError(
+        exportValidation.issues.find((issue) => issue.severity === "critical")
+          ?.message ?? "This draft is not ready to export yet.",
+      );
+      return null;
+    }
+
+    setExportError("");
+    return { preview: exportPreview, validation: exportValidation };
+  }
+
+  async function downloadTxtExport() {
+    const ready = ensureExportReady();
+
+    if (!ready) {
+      return;
+    }
+
+    const blob = new Blob([ready.preview.plainText], {
+      type: "text/plain;charset=utf-8",
+    });
+    triggerBlobDownload(blob, `${ready.preview.fileNameStem}.txt`);
+    setExportFormatPreference("txt");
+  }
+
+  async function downloadDocxExport() {
+    const ready = ensureExportReady();
+
+    if (!ready || !tailoredDraft) {
+      return;
+    }
+
+    setDocxExportLoading(true);
+    setExportError("");
+
+    try {
+      const response = await fetch("/api/export/docx", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          cvText,
+          jobText,
+          jobUrl,
+          forceLocal,
+          format: "docx",
+          confirmedEvidence,
+          acknowledgedBlockedDraft: hasBlockedExportAcknowledgement,
+          polishedItems: collectValidatedExportPolishedItems(tailoredDraft),
+        }),
+      });
+
+      if (!response.ok) {
+        const contentType = response.headers.get("content-type") ?? "";
+
+        if (contentType.includes("application/json")) {
+          const payload = (await response.json()) as { error?: string };
+          throw new Error(payload.error || "Could not export a DOCX right now.");
+        }
+
+        throw new Error("Could not export a DOCX right now.");
+      }
+
+      const blob = await response.blob();
+      triggerBlobDownload(
+        blob,
+        getDownloadFileName(
+          response.headers.get("content-disposition"),
+          `${ready.preview.fileNameStem}.docx`,
+        ),
+      );
+      setExportFormatPreference("docx");
+    } catch (reason) {
+      setExportError(
+        reason instanceof Error ? reason.message : "Could not export a DOCX right now.",
+      );
+    } finally {
+      setDocxExportLoading(false);
+    }
+  }
+
+  function printExportPreview() {
+    const ready = ensureExportReady();
+
+    if (!ready) {
+      return;
+    }
+
+    const runPrint = () => {
+      const previousTitle = document.title;
+      const nextTitle = ready.preview.fileNameStem;
+      let restored = false;
+      const restore = () => {
+        if (restored) {
+          return;
+        }
+
+        restored = true;
+        document.title = previousTitle;
+      };
+
+      document.title = nextTitle;
+      window.addEventListener("afterprint", restore, { once: true });
+      window.setTimeout(restore, 1500);
+      window.print();
+    };
+
+    setExportError("");
+    setExportFormatPreference("pdf");
+
+    if (!exportPreviewOpen) {
+      setExportPreviewOpen(true);
+      window.setTimeout(runPrint, 120);
+      return;
+    }
+
+    runPrint();
   }
 
   function toggleDraftAuditItem(itemId: string) {
@@ -1019,6 +1226,28 @@ export function SmartCvApp() {
                   draftLoading={draftLoading}
                   draftViewMode={draftViewMode}
                   expandedAuditItemIds={expandedDraftAuditItemIds}
+                  exportPanel={
+                    tailoredDraft && exportPreview && exportValidation ? (
+                      <ExportPanel
+                        acknowledgedBlockedDraft={hasBlockedExportAcknowledgement}
+                        docxLoading={docxExportLoading}
+                        error={exportError}
+                        formatPreference={exportFormatPreference}
+                        isOpen={exportPreviewOpen}
+                        onAcknowledgedBlockedDraftChange={
+                          setBlockedExportAcknowledgement
+                        }
+                        onDownloadDocx={downloadDocxExport}
+                        onDownloadTxt={downloadTxtExport}
+                        onPrint={printExportPreview}
+                        onToggleOpen={() =>
+                          setExportPreviewOpen((current) => !current)
+                        }
+                        preview={exportPreview}
+                        validation={exportValidation}
+                      />
+                    ) : null
+                  }
                   polishEligibleCount={eligiblePolishCount}
                   polishError={polishError}
                   polishLoading={polishLoading}
@@ -1201,6 +1430,10 @@ function isDraftViewMode(value: unknown): value is DraftViewMode {
   return value === "draft" || value === "audit";
 }
 
+function isExportFormat(value: unknown): value is ExportFormat {
+  return value === "txt" || value === "docx" || value === "pdf";
+}
+
 function isRequirementFilter(value: unknown): value is RequirementFilter {
   return (
     value === "all" ||
@@ -1226,6 +1459,35 @@ function isSectionArray(value: unknown): value is SectionText[] {
         typeof item.text === "string",
     )
   );
+}
+
+function triggerBlobDownload(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function getDownloadFileName(contentDisposition: string | null, fallback: string) {
+  if (!contentDisposition) {
+    return fallback;
+  }
+
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    return decodeURIComponent(utf8Match[1]);
+  }
+
+  const asciiMatch = contentDisposition.match(/filename=\"?([^\";]+)\"?/i);
+  if (asciiMatch?.[1]) {
+    return asciiMatch[1];
+  }
+
+  return fallback;
 }
 
 function composeCvSections(sections: SectionText[]) {

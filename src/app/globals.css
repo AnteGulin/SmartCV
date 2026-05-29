@@ -23,3 +23,42 @@ input,
 button {
   font: inherit;
 }
+
+@media print {
+  :root {
+    --background: #ffffff;
+    --foreground: #18181b;
+  }
+
+  body {
+    background: #ffffff !important;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  [data-export-print-root],
+  [data-export-print-root] * {
+    visibility: visible;
+  }
+
+  [data-export-print-root] {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    background: #ffffff;
+  }
+
+  [data-export-print-controls] {
+    display: none !important;
+  }
+
+  [data-export-print-section] {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+}

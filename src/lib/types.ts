@@ -50,6 +50,7 @@ export type TailorRequest = AnalyzeRequest;
 export type PolishDraftRequest = TailorRequest & {
   itemIds?: string[];
 };
+export type ExportFormat = "txt" | "docx" | "pdf";
 
 export interface SectionText {
   label: string;
@@ -346,4 +347,70 @@ export interface OpenAIDraftPolishItem {
 export interface OpenAIDraftPolishResult {
   model: string;
   items: OpenAIDraftPolishItem[];
+}
+
+export type ExportTextSource = "deterministic" | "polished_validated";
+
+export interface ExportPreviewItem {
+  itemId: string;
+  sectionId: TailoredDraftSection["id"];
+  sectionTitle: string;
+  text: string;
+  textSource: ExportTextSource;
+  sourceLabel: DraftSourceLabel;
+  evidenceIds: string[];
+  requirementIds: string[];
+}
+
+export interface ExportPreviewSection {
+  id: TailoredDraftSection["id"];
+  title: string;
+  items: ExportPreviewItem[];
+}
+
+export interface ExportPreview {
+  fileNameStem: string;
+  sections: ExportPreviewSection[];
+  plainText: string;
+  includedItemCount: number;
+  excludedItemCount: number;
+  polishedItemCount: number;
+  blockedRequirementCount: number;
+  missingHighImportanceCount: number;
+  requiresBlockedAcknowledgement: boolean;
+  warnings: string[];
+}
+
+export interface ExportValidationIssue {
+  id: string;
+  itemId?: string;
+  severity: "warning" | "critical";
+  category:
+    | "empty_export"
+    | "preview_mismatch"
+    | "excluded_item_included"
+    | "critical_item_included"
+    | "blocked_ack_required"
+    | "hidden_content"
+    | "keyword_stuffing";
+  message: string;
+  recommendation: string;
+}
+
+export interface ExportValidationResult {
+  canExport: boolean;
+  requiresBlockedAcknowledgement: boolean;
+  issues: ExportValidationIssue[];
+}
+
+export interface ExportPolishedItem {
+  itemId: string;
+  polishedText: string;
+  model?: string;
+}
+
+export interface ExportDocxRequest extends AnalyzeRequest {
+  format: "docx";
+  acknowledgedBlockedDraft?: boolean;
+  polishedItems?: ExportPolishedItem[];
 }

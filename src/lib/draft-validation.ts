@@ -927,7 +927,7 @@ export function getDraftItemCopyExclusionReason(
   return "copy_excluded_by_validation";
 }
 
-function buildCopyText(sections: TailoredDraftSection[]) {
+export function buildCopyText(sections: TailoredDraftSection[]) {
   const lines: string[] = [];
   const headerItems = sections.find((section) => section.id === "header")?.items ?? [];
 
