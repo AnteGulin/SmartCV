@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { groundOpenAIAssist } from "@/lib/analysis-validation";
 import { analyzeLocally } from "@/lib/local-analyzer";
 import { analyzeWithOpenAI } from "@/lib/openai-analyzer";
 import type { AnalyzeRequest } from "@/lib/types";
@@ -29,23 +30,44 @@ export async function POST(request: Request) {
 
     if (!payload.forceLocal && process.env.OPENAI_API_KEY) {
       try {
-        const result = await analyzeWithOpenAI(payload);
+        const assist = await analyzeWithOpenAI(payload);
+        const groundedAssist = groundOpenAIAssist(payload.jobText, assist);
+        const warnings = [
+          ...groundedAssist.warnings,
+          groundedAssist.requirements.length
+            ? "OpenAI provided grounded extraction hints. The deterministic local engine remained the source of truth."
+            : "OpenAI returned no grounded extraction hints, so deterministic local extraction was used.",
+        ];
+        const result = analyzeLocally(payload.cvText, payload.jobText, payload.jobUrl, {
+          assistant: groundedAssist,
+          mode: groundedAssist.requirements.length ? "openai" : "local",
+          model: groundedAssist.requirements.length
+            ? `${assist.model} + local-deterministic-evidence-engine`
+            : "local-deterministic-evidence-engine",
+          warnings,
+        });
         return NextResponse.json(result);
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Unknown OpenAI error.";
-        const result = analyzeLocally(
-          payload.cvText,
-          payload.jobText,
-          payload.jobUrl,
-          `OpenAI analysis failed, so the local analyzer ran instead. ${message}`,
-        );
+      } catch {
+        const result = analyzeLocally(payload.cvText, payload.jobText, payload.jobUrl, {
+          warnings: [
+            "OpenAI assist failed, so deterministic local analysis was used.",
+          ],
+        });
         return NextResponse.json(result);
       }
     }
 
+    const warnings =
+      payload.forceLocal && process.env.OPENAI_API_KEY
+        ? ["Local analyzer mode is enabled, so OpenAI extraction was skipped."]
+        : !process.env.OPENAI_API_KEY
+          ? ["OpenAI assist is unavailable, so deterministic local analysis was used."]
+          : [];
+
     return NextResponse.json(
-      analyzeLocally(payload.cvText, payload.jobText, payload.jobUrl),
+      analyzeLocally(payload.cvText, payload.jobText, payload.jobUrl, {
+        warnings,
+      }),
     );
   } catch {
     return NextResponse.json(

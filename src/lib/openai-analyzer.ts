@@ -1,189 +1,37 @@
 import OpenAI from "openai";
-import type { AnalysisResult, AnalyzeRequest } from "@/lib/types";
+import type { AnalyzeRequest, OpenAIAssistResult } from "@/lib/types";
 
 export const DEFAULT_OPENAI_MODEL = "gpt-5.4-mini";
 
-const analysisSchema = {
+const assistSchema = {
   type: "object",
   additionalProperties: false,
-  required: [
-    "meta",
-    "parser",
-    "job",
-    "keywordCoverage",
-    "evidenceMap",
-    "layers",
-    "gaps",
-    "atsRisks",
-    "finalDraft",
-  ],
+  required: ["title", "requirements", "warnings"],
   properties: {
-    meta: {
-      type: "object",
-      additionalProperties: false,
-      required: ["mode", "model", "generatedAt", "warning"],
-      properties: {
-        mode: { type: "string", enum: ["openai", "local"] },
-        model: { type: "string" },
-        generatedAt: { type: "string" },
-        warning: { type: "string" },
-      },
-    },
-    parser: {
-      type: "object",
-      additionalProperties: false,
-      required: ["readiness", "signals"],
-      properties: {
-        readiness: { type: "number" },
-        signals: {
-          type: "array",
-          items: { $ref: "#/$defs/parserSignal" },
+    title: { type: "string" },
+    requirements: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["text", "anchorSnippet"],
+        properties: {
+          text: { type: "string" },
+          sourceSection: { type: "string" },
+          anchorSnippet: { type: "string" },
         },
       },
     },
-    job: {
-      type: "object",
-      additionalProperties: false,
-      required: [
-        "title",
-        "seniority",
-        "requiredSkills",
-        "preferredSkills",
-        "responsibilities",
-        "tools",
-        "keywords",
-      ],
-      properties: {
-        title: { type: "string" },
-        seniority: { type: "string" },
-        requiredSkills: { type: "array", items: { type: "string" } },
-        preferredSkills: { type: "array", items: { type: "string" } },
-        responsibilities: { type: "array", items: { type: "string" } },
-        tools: { type: "array", items: { type: "string" } },
-        keywords: { type: "array", items: { type: "string" } },
-      },
-    },
-    keywordCoverage: {
-      type: "object",
-      additionalProperties: false,
-      required: ["matched", "weak", "missing"],
-      properties: {
-        matched: { type: "array", items: { type: "string" } },
-        weak: { type: "array", items: { type: "string" } },
-        missing: { type: "array", items: { type: "string" } },
-      },
-    },
-    evidenceMap: {
+    warnings: {
       type: "array",
-      items: { $ref: "#/$defs/evidenceItem" },
-    },
-    layers: {
-      type: "array",
-      items: { $ref: "#/$defs/layer" },
-    },
-    gaps: {
-      type: "array",
-      items: { $ref: "#/$defs/gap" },
-    },
-    atsRisks: {
-      type: "array",
-      items: { $ref: "#/$defs/atsRisk" },
-    },
-    finalDraft: { type: "string" },
-  },
-  $defs: {
-    parserSignal: {
-      type: "object",
-      additionalProperties: false,
-      required: ["label", "value", "level"],
-      properties: {
-        label: { type: "string" },
-        value: { type: "string" },
-        level: { type: "string", enum: ["good", "warning", "danger"] },
-      },
-    },
-    evidenceItem: {
-      type: "object",
-      additionalProperties: false,
-      required: ["requirement", "evidence", "confidence", "action"],
-      properties: {
-        requirement: { type: "string" },
-        evidence: { type: "string" },
-        confidence: { type: "string", enum: ["high", "medium", "low"] },
-        action: {
-          type: "string",
-          enum: ["rewrite", "keep", "user_confirm"],
-        },
-      },
-    },
-    layer: {
-      type: "object",
-      additionalProperties: false,
-      required: [
-        "id",
-        "label",
-        "segment",
-        "original",
-        "suggested",
-        "rationale",
-        "evidence",
-        "confidence",
-        "keywords",
-        "status",
-      ],
-      properties: {
-        id: { type: "string" },
-        label: { type: "string" },
-        segment: {
-          type: "string",
-          enum: [
-            "headline",
-            "summary",
-            "experience",
-            "skills",
-            "education",
-            "format",
-          ],
-        },
-        original: { type: "string" },
-        suggested: { type: "string" },
-        rationale: { type: "string" },
-        evidence: { type: "array", items: { type: "string" } },
-        confidence: { type: "string", enum: ["high", "medium", "low"] },
-        keywords: { type: "array", items: { type: "string" } },
-        status: {
-          type: "string",
-          enum: ["ready", "needs_review", "blocked"],
-        },
-      },
-    },
-    gap: {
-      type: "object",
-      additionalProperties: false,
-      required: ["requirement", "reason", "userAction"],
-      properties: {
-        requirement: { type: "string" },
-        reason: { type: "string" },
-        userAction: { type: "string" },
-      },
-    },
-    atsRisk: {
-      type: "object",
-      additionalProperties: false,
-      required: ["area", "level", "issue", "fix"],
-      properties: {
-        area: { type: "string" },
-        level: { type: "string", enum: ["good", "warning", "danger"] },
-        issue: { type: "string" },
-        fix: { type: "string" },
-      },
+      items: { type: "string" },
     },
   },
 } as const;
 
 export async function analyzeWithOpenAI(
   request: AnalyzeRequest,
-): Promise<AnalysisResult> {
+): Promise<OpenAIAssistResult> {
   const model = process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL;
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -193,50 +41,49 @@ export async function analyzeWithOpenAI(
       {
         role: "system",
         content: [
-          "You are the backend analysis engine for SmartCV, an evidence-based CV tailoring studio.",
-          "Your job is to parse a CV and a job description into editable layers.",
-          "Never invent experience, dates, companies, tools, certifications, education, or metrics.",
-          "If the CV does not prove a requirement, mark it as a gap or blocked layer.",
-          "Prefer exact job language only when there is CV evidence.",
-          "Write suggested CV text in a natural, human, ATS-readable style.",
-          "Keep outputs concise enough for a recruiter-facing CV.",
+          "You assist SmartCV with extraction only.",
+          "Extract explicit job requirements, qualifications, tools, responsibilities, and hard blockers from the job text.",
+          "Never invent experience or rewrite the CV.",
+          "For every extracted requirement, provide an anchorSnippet copied from the job text.",
+          "Keep requirement text short, faithful, and recruiter-readable.",
+          "Ignore benefits, marketing copy, and equal-opportunity boilerplate.",
+          "If you are unsure, omit the item instead of guessing.",
         ].join(" "),
       },
       {
         role: "user",
         content: JSON.stringify({
-          task: "Analyze and tailor this CV against the job description.",
+          task: "Extract grounded requirement hints from this job posting.",
           jobUrl: request.jobUrl || "",
-          cvText: request.cvText,
           jobText: request.jobText,
         }),
       },
     ],
-    max_output_tokens: 7000,
+    max_output_tokens: 2500,
     text: {
       format: {
         type: "json_schema",
-        name: "cv_tailoring_analysis",
+        name: "smartcv_phase1_assist",
         strict: true,
-        schema: analysisSchema,
+        schema: assistSchema,
       },
     },
   });
 
   const text = response.output_text;
   if (!text) {
-    throw new Error("OpenAI returned no structured output.");
+    throw new Error("OpenAI returned no extraction output.");
   }
 
-  const parsed = JSON.parse(text) as AnalysisResult;
+  const parsed = JSON.parse(text) as Omit<OpenAIAssistResult, "model">;
 
   return {
-    ...parsed,
-    meta: {
-      ...parsed.meta,
-      mode: "openai",
-      model,
-      generatedAt: new Date().toISOString(),
-    },
+    model,
+    title: parsed.title,
+    requirements: parsed.requirements ?? [],
+    warnings: parsed.warnings ?? [],
   };
 }
+
+// TODO(phase1b): Let OpenAI suggest grounded CV fact hints too, but only after
+// deterministic anchor validation is in place for both job and CV excerpts.
