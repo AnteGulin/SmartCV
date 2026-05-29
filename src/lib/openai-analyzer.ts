@@ -1,5 +1,10 @@
 import OpenAI from "openai";
-import type { AnalyzeRequest, OpenAIAssistResult } from "@/lib/types";
+import type {
+  AnalyzeRequest,
+  DraftPolishCandidate,
+  OpenAIDraftPolishResult,
+  OpenAIAssistResult,
+} from "@/lib/types";
 
 export const DEFAULT_OPENAI_MODEL = "gpt-5.4-mini";
 
@@ -25,6 +30,31 @@ const assistSchema = {
     warnings: {
       type: "array",
       items: { type: "string" },
+    },
+  },
+} as const;
+
+const polishSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["items"],
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "polishedText", "changedMeaning", "notes"],
+        properties: {
+          id: { type: "string" },
+          polishedText: { type: "string" },
+          changedMeaning: { type: "boolean" },
+          notes: {
+            type: "array",
+            items: { type: "string" },
+          },
+        },
+      },
     },
   },
 } as const;
@@ -83,6 +113,61 @@ export async function analyzeWithOpenAI(
     title: parsed.title,
     requirements: parsed.requirements ?? [],
     warnings: parsed.warnings ?? [],
+  };
+}
+
+export async function polishDraftItemsWithOpenAI(
+  candidates: DraftPolishCandidate[],
+): Promise<OpenAIDraftPolishResult> {
+  const model = process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL;
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+  const response = await client.responses.create({
+    model,
+    input: [
+      {
+        role: "system",
+        content: [
+          "You assist SmartCV with wording polish only.",
+          "You may improve grammar, clarity, concision, and recruiter readability for already-safe CV bullets.",
+          "Keep meaning unchanged and preserve the deterministic source of truth.",
+          "Use only the provided item text, evidence snippets, requirement snippets, and allowed terms.",
+          "Do not add or invent companies, roles, dates, tools, metrics, certifications, languages, locations, work authorization, clearance, licenses, seniority, or years of experience.",
+          "Do not add numbers or make claims stronger.",
+          "Do not mention missing or blocked requirements.",
+          "If you are unsure, return the original text unchanged.",
+          "Return strict JSON only.",
+        ].join(" "),
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          task: "Polish the wording of these already-safe deterministic CV draft items without changing meaning.",
+          items: candidates,
+        }),
+      },
+    ],
+    max_output_tokens: 3000,
+    text: {
+      format: {
+        type: "json_schema",
+        name: "smartcv_phase3b_polish",
+        strict: true,
+        schema: polishSchema,
+      },
+    },
+  });
+
+  const text = response.output_text;
+  if (!text) {
+    throw new Error("OpenAI returned no polish output.");
+  }
+
+  const parsed = JSON.parse(text) as Omit<OpenAIDraftPolishResult, "model">;
+
+  return {
+    model,
+    items: parsed.items ?? [],
   };
 }
 

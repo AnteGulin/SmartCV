@@ -50,8 +50,10 @@ export function isTailoredDraftResult(
   const result = value as Partial<TailoredDraftResult>;
 
   return (
-    result.meta?.version === "phase3.v1" &&
+    (result.meta?.version === "phase3.v1" ||
+      result.meta?.version === "phase3b.v1") &&
     result.meta.mode === "local" &&
+    (!result.meta.polish || isDraftPolishSummary(result.meta.polish)) &&
     isPhase1AnalysisResult(result.analysis) &&
     Array.isArray(result.draft?.sections) &&
     result.draft.sections.every(
@@ -73,6 +75,7 @@ export function isTailoredDraftResult(
             typeof item.sourceLabel === "string" &&
             typeof item.reviewState === "string" &&
             Array.isArray(item.warnings) &&
+            (!item.polish || isDraftPolishResult(item.polish)) &&
             item.warnings.every(isDraftValidationIssue),
         ),
     ) &&
@@ -83,6 +86,49 @@ export function isTailoredDraftResult(
     Array.isArray(result.validation?.missingHighImportanceRequirementIds) &&
     typeof result.validation?.userConfirmedOnlyItemCount === "number" &&
     typeof result.validation?.droppedItemCount === "number"
+  );
+}
+
+function isDraftPolishSummary(value: unknown) {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const summary = value as Partial<TailoredDraftResult["meta"]["polish"]>;
+
+  return (
+    typeof summary?.attempted === "boolean" &&
+    (!summary.model || typeof summary.model === "string") &&
+    typeof summary.eligibleCount === "number" &&
+    typeof summary.polishedCount === "number" &&
+    typeof summary.rejectedCount === "number" &&
+    typeof summary.unchangedCount === "number" &&
+    typeof summary.failedCount === "number"
+  );
+}
+
+function isDraftPolishResult(value: unknown) {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const polish = value as Partial<
+    NonNullable<
+      TailoredDraftResult["draft"]["sections"][number]["items"][number]["polish"]
+    >
+  >;
+
+  return (
+    (polish?.state === "not_requested" ||
+      polish?.state === "validated" ||
+      polish?.state === "unchanged" ||
+      polish?.state === "rejected" ||
+      polish?.state === "failed") &&
+    (!polish.polishedText || typeof polish.polishedText === "string") &&
+    (!polish.model || typeof polish.model === "string") &&
+    Array.isArray(polish.notes) &&
+    Array.isArray(polish.warnings) &&
+    polish.warnings.every(isDraftValidationIssue)
   );
 }
 

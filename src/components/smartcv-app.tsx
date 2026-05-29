@@ -34,7 +34,14 @@ import {
   isTailoredDraftResult,
 } from "@/lib/analysis-validation";
 import { splitTextIntoSections } from "@/lib/analysis-utils";
-import { buildTailorInputSignature } from "@/lib/draft-composer";
+import {
+  buildDraftPolishSignature,
+  buildTailorInputSignature,
+} from "@/lib/draft-composer";
+import {
+  countEligibleDraftPolishItems,
+  getEligibleDraftPolishItemIds,
+} from "@/lib/draft-validation";
 import {
   buildRequirementFingerprint,
   CONFIRMED_EVIDENCE_STORAGE_KEY,
@@ -62,6 +69,7 @@ type StoredWorkspace = {
   result: Phase1AnalysisResult | null;
   tailoredDraft: TailoredDraftResult | null;
   tailoredDraftSignature: string | null;
+  tailoredDraftPolishSignature: string | null;
   requirementFilter: RequirementFilter;
   savedAt: string;
 };
@@ -135,6 +143,8 @@ export function SmartCvApp() {
   const [tailoredDraftSignature, setTailoredDraftSignature] = useState<string | null>(
     null,
   );
+  const [tailoredDraftPolishSignature, setTailoredDraftPolishSignature] =
+    useState<string | null>(null);
   const [requirementFilter, setRequirementFilter] =
     useState<RequirementFilter>("all");
   const [confirmedEvidence, setConfirmedEvidence] = useState<UserConfirmedEvidence[]>([]);
@@ -143,10 +153,16 @@ export function SmartCvApp() {
   >({});
   const [draftLoading, setDraftLoading] = useState(false);
   const [draftError, setDraftError] = useState("");
+  const [polishLoading, setPolishLoading] = useState(false);
+  const [polishError, setPolishError] = useState("");
   const [copiedDraft, setCopiedDraft] = useState(false);
   const [hasHydrated, setHasHydrated] = useState(false);
 
   const canAnalyze = cvText.trim().length > 80 && jobText.trim().length > 80;
+  const tailorInputSignature = useMemo(
+    () => buildTailorInputSignature(cvText, jobText, confirmedEvidence),
+    [confirmedEvidence, cvText, jobText],
+  );
 
   const statusCounts = useMemo(() => {
     if (!result) {
@@ -245,10 +261,23 @@ export function SmartCvApp() {
                   "cv",
                 ),
           );
+          const storedTailoredDraft = isTailoredDraftResult(workspace.tailoredDraft)
+            ? workspace.tailoredDraft
+            : null;
+          const expectedPolishSignature =
+            storedTailoredDraft?.meta.polish?.attempted
+              ? buildDraftPolishSignature(
+                  nextDraftSignature,
+                  getEligibleDraftPolishItemIds(storedTailoredDraft),
+                  storedTailoredDraft.meta.polish.model,
+                )
+              : null;
           const nextTailoredDraft =
-            isTailoredDraftResult(workspace.tailoredDraft) &&
-            workspace.tailoredDraftSignature === nextDraftSignature
-              ? workspace.tailoredDraft
+            storedTailoredDraft &&
+            workspace.tailoredDraftSignature === nextDraftSignature &&
+            (!storedTailoredDraft.meta.polish?.attempted ||
+              workspace.tailoredDraftPolishSignature === expectedPolishSignature)
+              ? storedTailoredDraft
               : null;
           setResult(
             nextTailoredDraft?.analysis ??
@@ -256,6 +285,11 @@ export function SmartCvApp() {
           );
           setTailoredDraft(nextTailoredDraft);
           setTailoredDraftSignature(nextTailoredDraft ? nextDraftSignature : null);
+          setTailoredDraftPolishSignature(
+            nextTailoredDraft?.meta.polish?.attempted
+              ? expectedPolishSignature
+              : null,
+          );
           setRequirementFilter(
             isRequirementFilter(workspace.requirementFilter)
               ? workspace.requirementFilter
@@ -286,6 +320,7 @@ export function SmartCvApp() {
       result,
       tailoredDraft,
       tailoredDraftSignature,
+      tailoredDraftPolishSignature,
       requirementFilter,
       savedAt: new Date().toISOString(),
     };
@@ -303,6 +338,7 @@ export function SmartCvApp() {
     requirementFilter,
     result,
     tailoredDraft,
+    tailoredDraftPolishSignature,
     tailoredDraftSignature,
   ]);
 
@@ -318,8 +354,11 @@ export function SmartCvApp() {
   function invalidateTailoredDraft() {
     setTailoredDraft(null);
     setTailoredDraftSignature(null);
+    setTailoredDraftPolishSignature(null);
     setCopiedDraft(false);
     setDraftError("");
+    setPolishError("");
+    setPolishLoading(false);
   }
 
   async function fetchJobText() {
@@ -503,6 +542,10 @@ export function SmartCvApp() {
             item.reviewState === "ready" && item.type !== "review_note",
         ).length
     : 0;
+  const eligiblePolishCount = tailoredDraft
+    ? countEligibleDraftPolishItems(tailoredDraft)
+    : 0;
+  const polishedDraftItemCount = tailoredDraft?.meta.polish?.polishedCount ?? 0;
 
   function updateConfirmationDraft(
     requirementFingerprint: string,
@@ -591,6 +634,7 @@ export function SmartCvApp() {
     }
 
     setDraftError("");
+    setPolishError("");
     setDraftLoading(true);
 
     try {
@@ -617,9 +661,8 @@ export function SmartCvApp() {
 
       setResult(payload.analysis);
       setTailoredDraft(payload);
-      setTailoredDraftSignature(
-        buildTailorInputSignature(cvText, jobText, confirmedEvidence),
-      );
+      setTailoredDraftSignature(tailorInputSignature);
+      setTailoredDraftPolishSignature(null);
       setCopiedDraft(false);
     } catch (reason) {
       setDraftError(
@@ -629,6 +672,70 @@ export function SmartCvApp() {
       );
     } finally {
       setDraftLoading(false);
+    }
+  }
+
+  async function polishTailoredDraft() {
+    if (!tailoredDraft) {
+      setPolishError("Generate a deterministic tailored draft before polishing wording.");
+      return;
+    }
+
+    const eligibleItemIds = getEligibleDraftPolishItemIds(tailoredDraft);
+
+    if (!eligibleItemIds.length) {
+      setPolishError(
+        "No eligible CV-backed experience or project bullets are available for OpenAI wording polish.",
+      );
+      return;
+    }
+
+    setDraftError("");
+    setPolishError("");
+    setPolishLoading(true);
+
+    try {
+      const response = await fetch("/api/polish-draft", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          cvText,
+          jobText,
+          jobUrl,
+          forceLocal,
+          confirmedEvidence,
+          itemIds: eligibleItemIds,
+        }),
+      });
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.error || "Wording polish failed.");
+      }
+
+      if (!isTailoredDraftResult(payload)) {
+        throw new Error("Polish response did not match the tailored draft schema.");
+      }
+
+      const nextPolishSignature = payload.meta.polish?.attempted
+        ? buildDraftPolishSignature(
+            tailorInputSignature,
+            getEligibleDraftPolishItemIds(payload),
+            payload.meta.polish.model,
+          )
+        : null;
+
+      setResult(payload.analysis);
+      setTailoredDraft(payload);
+      setTailoredDraftSignature(tailorInputSignature);
+      setTailoredDraftPolishSignature(nextPolishSignature);
+      setCopiedDraft(false);
+    } catch (reason) {
+      setPolishError(
+        reason instanceof Error ? reason.message : "Wording polish failed.",
+      );
+    } finally {
+      setPolishLoading(false);
     }
   }
 
@@ -858,8 +965,12 @@ export function SmartCvApp() {
                   copied={copiedDraft}
                   draftError={draftError}
                   draftLoading={draftLoading}
+                  polishEligibleCount={eligiblePolishCount}
+                  polishError={polishError}
+                  polishLoading={polishLoading}
                   onCopy={copyValidatedDraft}
                   onGenerate={generateTailoredDraft}
+                  onPolish={polishTailoredDraft}
                   result={tailoredDraft}
                 />
               </>
@@ -968,6 +1079,14 @@ export function SmartCvApp() {
                     <SummaryLine
                       label="Copy-ready items"
                       value={String(readyDraftItemCount)}
+                    />
+                    <SummaryLine
+                      label="Polish-eligible"
+                      value={String(eligiblePolishCount)}
+                    />
+                    <SummaryLine
+                      label="Validated polish"
+                      value={String(polishedDraftItemCount)}
                     />
                   </SummaryCard>
                 ) : null}

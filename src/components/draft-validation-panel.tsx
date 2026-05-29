@@ -3,38 +3,65 @@
 import type { TailoredDraftResult } from "@/lib/types";
 
 export function DraftValidationPanel({
-  validation,
+  result,
 }: {
-  validation: TailoredDraftResult["validation"];
+  result: TailoredDraftResult;
 }) {
+  const polish = result.meta.polish;
+
   return (
     <div className="space-y-3">
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <StatCard
           label="Blocked requirements"
-          value={String(validation.blockedRequirementIds.length)}
+          value={String(result.validation.blockedRequirementIds.length)}
         />
         <StatCard
           label="Missing high-importance"
-          value={String(validation.missingHighImportanceRequirementIds.length)}
+          value={String(result.validation.missingHighImportanceRequirementIds.length)}
         />
         <StatCard
           label="User-confirmed only"
-          value={String(validation.userConfirmedOnlyItemCount)}
+          value={String(result.validation.userConfirmedOnlyItemCount)}
         />
         <StatCard
           label="Dropped items"
-          value={String(validation.droppedItemCount)}
+          value={String(result.validation.droppedItemCount)}
         />
       </div>
 
-      {validation.issues.length ? (
+      {polish ? (
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <StatCard
+            label="Polish eligible"
+            value={String(polish.eligibleCount)}
+          />
+          <StatCard
+            label="Polish validated"
+            value={String(polish.polishedCount)}
+          />
+          <StatCard
+            label="Polish unchanged"
+            value={String(polish.unchangedCount)}
+          />
+          <StatCard
+            label="Polish rejected"
+            value={String(polish.rejectedCount)}
+          />
+          <StatCard
+            label="Polish failed"
+            value={String(polish.failedCount)}
+          />
+        </div>
+      ) : null}
+
+      {result.validation.issues.length ? (
         <div className="rounded-md border border-zinc-200 bg-white p-4">
           <h3 className="mb-3 text-sm font-semibold text-zinc-900">
             Validation issues
           </h3>
           <div className="space-y-3">
-            {validation.issues.map((issue) => (
+            {result.validation.issues.map((issue) => (
               <article
                 key={issue.id}
                 className="rounded-md border border-zinc-200 bg-zinc-50 p-3"

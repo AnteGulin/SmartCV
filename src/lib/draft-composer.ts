@@ -185,6 +185,27 @@ export function buildTailorInputSignature(
   return `phase3.v1:${hash}:${confirmedEvidence.length}`;
 }
 
+export function buildDraftPolishSignature(
+  tailorInputSignature: string,
+  itemIds: string[],
+  model?: string,
+) {
+  const raw = [
+    "phase3b.v1",
+    tailorInputSignature,
+    [...itemIds].sort().join("|"),
+    model ?? "local",
+  ].join("||");
+
+  let hash = 0;
+
+  for (let index = 0; index < raw.length; index += 1) {
+    hash = (hash * 31 + raw.charCodeAt(index)) % 2147483647;
+  }
+
+  return `phase3b.v1:${hash}:${itemIds.length}`;
+}
+
 function buildHeaderSection(analysis: Phase1AnalysisResult): TailoredDraftSection {
   const header = analysis.cv.sections.find(
     (section) => section.label.toLowerCase() === "header",

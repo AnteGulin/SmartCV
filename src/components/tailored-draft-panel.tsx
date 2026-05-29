@@ -1,22 +1,30 @@
 "use client";
 
-import { Copy, Loader2, Wand2 } from "lucide-react";
+import { Copy, Loader2, Sparkles, Wand2 } from "lucide-react";
 import { DraftValidationPanel } from "@/components/draft-validation-panel";
-import type { TailoredDraftResult } from "@/lib/types";
+import type { TailoredDraftItem, TailoredDraftResult } from "@/lib/types";
 
 export function TailoredDraftPanel({
   copied,
   draftError,
   draftLoading,
+  polishEligibleCount,
+  polishError,
+  polishLoading,
   onCopy,
   onGenerate,
+  onPolish,
   result,
 }: {
   copied: boolean;
   draftError: string;
   draftLoading: boolean;
+  polishEligibleCount: number;
+  polishError: string;
+  polishLoading: boolean;
   onCopy: () => void;
   onGenerate: () => void;
+  onPolish: () => void;
   result: TailoredDraftResult | null;
 }) {
   return (
@@ -25,8 +33,8 @@ export function TailoredDraftPanel({
         <div>
           <h2 className="text-lg font-semibold">Tailored draft</h2>
           <p className="mt-1 text-sm leading-6 text-zinc-600">
-            SmartCV builds this draft deterministically from supported evidence only.
-            User-confirmed-only content stays out of default copy until reviewed.
+            Deterministic wording remains the source of truth. OpenAI polish can only
+            refine eligible CV-backed bullets after strict validation.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -34,7 +42,7 @@ export function TailoredDraftPanel({
           <button
             type="button"
             onClick={onGenerate}
-            disabled={draftLoading}
+            disabled={draftLoading || polishLoading}
             className="inline-flex h-9 items-center gap-2 rounded-md bg-zinc-950 px-4 text-sm font-semibold text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-300"
           >
             {draftLoading ? (
@@ -43,6 +51,19 @@ export function TailoredDraftPanel({
               <Wand2 className="h-4 w-4" aria-hidden="true" />
             )}
             Generate tailored draft
+          </button>
+          <button
+            type="button"
+            onClick={onPolish}
+            disabled={!result || draftLoading || polishLoading || !polishEligibleCount}
+            className="inline-flex h-9 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {polishLoading ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <Sparkles className="h-4 w-4" aria-hidden="true" />
+            )}
+            Polish wording
           </button>
           <button
             type="button"
@@ -62,6 +83,12 @@ export function TailoredDraftPanel({
         </div>
       ) : null}
 
+      {polishError ? (
+        <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+          {polishError}
+        </div>
+      ) : null}
+
       {result ? (
         <div className="space-y-4">
           {result.meta.warnings.length ? (
@@ -75,7 +102,7 @@ export function TailoredDraftPanel({
             </div>
           ) : null}
 
-          <DraftValidationPanel validation={result.validation} />
+          <DraftValidationPanel result={result} />
 
           <div className="space-y-4">
             {result.draft.sections.map((section) =>
@@ -96,6 +123,7 @@ export function TailoredDraftPanel({
                         <div className="mb-2 flex flex-wrap items-center gap-2">
                           <SourcePill source={item.sourceLabel} />
                           <ReviewPill reviewState={item.reviewState} />
+                          {item.polish ? <PolishPill polishState={item.polish.state} /> : null}
                           <span className="rounded bg-zinc-100 px-2 py-1 text-xs font-medium text-zinc-700">
                             Evidence {item.evidenceIds.length}
                           </span>
@@ -103,15 +131,26 @@ export function TailoredDraftPanel({
                             Requirements {item.requirementIds.length}
                           </span>
                         </div>
-                        <p className="whitespace-pre-wrap text-sm leading-6 text-zinc-900">
-                          {item.text}
-                        </p>
-                        {item.warnings.length ? (
+                        <DraftItemBody item={item} />
+                        {item.warnings.length || item.polish?.warnings.length ? (
                           <div className="mt-3 space-y-2">
                             {item.warnings.map((warning) => (
                               <div
                                 key={warning.id}
                                 className="rounded border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs leading-5 text-zinc-700"
+                              >
+                                <span className="font-semibold">
+                                  {warning.severity.charAt(0).toUpperCase() +
+                                    warning.severity.slice(1)}
+                                  :
+                                </span>{" "}
+                                {warning.message}
+                              </div>
+                            ))}
+                            {item.polish?.warnings.map((warning) => (
+                              <div
+                                key={warning.id}
+                                className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900"
                               >
                                 <span className="font-semibold">
                                   {warning.severity.charAt(0).toUpperCase() +
@@ -138,6 +177,41 @@ export function TailoredDraftPanel({
         </div>
       )}
     </section>
+  );
+}
+
+function DraftItemBody({ item }: { item: TailoredDraftItem }) {
+  const polishedText = item.polish?.polishedText;
+  const hasValidatedPolish =
+    item.polish?.state === "validated" &&
+    Boolean(polishedText) &&
+    polishedText !== item.text;
+
+  if (!hasValidatedPolish) {
+    return (
+      <p className="whitespace-pre-wrap text-sm leading-6 text-zinc-900">{item.text}</p>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3">
+        <div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-emerald-800">
+          Validated polished wording
+        </div>
+        <p className="whitespace-pre-wrap text-sm leading-6 text-zinc-900">
+          {polishedText}
+        </p>
+      </div>
+      <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3">
+        <div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-zinc-500">
+          Deterministic source text
+        </div>
+        <p className="whitespace-pre-wrap text-sm leading-6 text-zinc-800">
+          {item.text}
+        </p>
+      </div>
+    </div>
   );
 }
 
@@ -196,6 +270,35 @@ function ReviewPill({
   return (
     <span className={`rounded border px-2 py-1 text-xs font-medium ${styles[reviewState]}`}>
       {label}
+    </span>
+  );
+}
+
+function PolishPill({
+  polishState,
+}: {
+  polishState: NonNullable<
+    TailoredDraftResult["draft"]["sections"][number]["items"][number]["polish"]
+  >["state"];
+}) {
+  const styles = {
+    not_requested: "border-zinc-200 bg-zinc-50 text-zinc-700",
+    validated: "border-violet-200 bg-violet-50 text-violet-800",
+    unchanged: "border-zinc-200 bg-zinc-50 text-zinc-700",
+    rejected: "border-amber-200 bg-amber-50 text-amber-800",
+    failed: "border-red-200 bg-red-50 text-red-800",
+  };
+  const labels = {
+    not_requested: "Not requested",
+    validated: "OpenAI-polished, validated",
+    unchanged: "Polish unchanged",
+    rejected: "Polish rejected",
+    failed: "Polish failed",
+  };
+
+  return (
+    <span className={`rounded border px-2 py-1 text-xs font-medium ${styles[polishState]}`}>
+      {labels[polishState]}
     </span>
   );
 }

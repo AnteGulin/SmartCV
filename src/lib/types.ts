@@ -47,6 +47,9 @@ export type AnalyzeRequest = {
 };
 
 export type TailorRequest = AnalyzeRequest;
+export type PolishDraftRequest = TailorRequest & {
+  itemIds?: string[];
+};
 
 export interface SectionText {
   label: string;
@@ -228,9 +231,36 @@ export interface DraftValidationIssue {
     | "unverified_years"
     | "user_confirmed_only"
     | "missing_anchor"
-    | "copy_excluded";
+    | "copy_excluded"
+    | "polish_rejected"
+    | "polish_failed";
   message: string;
   recommendation: string;
+}
+
+export type DraftPolishState =
+  | "not_requested"
+  | "validated"
+  | "unchanged"
+  | "rejected"
+  | "failed";
+
+export interface DraftPolishResult {
+  state: DraftPolishState;
+  polishedText?: string;
+  model?: string;
+  notes: string[];
+  warnings: DraftValidationIssue[];
+}
+
+export interface DraftPolishSummary {
+  attempted: boolean;
+  model?: string;
+  eligibleCount: number;
+  polishedCount: number;
+  rejectedCount: number;
+  unchangedCount: number;
+  failedCount: number;
 }
 
 export interface TailoredDraftItem {
@@ -242,6 +272,7 @@ export interface TailoredDraftItem {
   sourceLabel: DraftSourceLabel;
   reviewState: DraftItemReviewState;
   warnings: DraftValidationIssue[];
+  polish?: DraftPolishResult;
 }
 
 export interface TailoredDraftSection {
@@ -261,10 +292,11 @@ export interface TailoredDraftSection {
 
 export interface TailoredDraftResult {
   meta: {
-    version: "phase3.v1";
+    version: "phase3.v1" | "phase3b.v1";
     generatedAt: string;
     mode: "local";
     warnings: string[];
+    polish?: DraftPolishSummary;
   };
   analysis: Phase1AnalysisResult;
   draft: {
@@ -279,4 +311,28 @@ export interface TailoredDraftResult {
     userConfirmedOnlyItemCount: number;
     droppedItemCount: number;
   };
+}
+
+export interface DraftPolishCandidate {
+  id: string;
+  type: "experience_bullet" | "project_bullet";
+  originalText: string;
+  evidenceSnippets: string[];
+  requirementSnippets: string[];
+  requiredTerms: string[];
+  allowedTerms: string[];
+  forbiddenAdditions: string[];
+  maxLength: number;
+}
+
+export interface OpenAIDraftPolishItem {
+  id: string;
+  polishedText: string;
+  changedMeaning: boolean;
+  notes: string[];
+}
+
+export interface OpenAIDraftPolishResult {
+  model: string;
+  items: OpenAIDraftPolishItem[];
 }
