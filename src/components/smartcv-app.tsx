@@ -28,8 +28,13 @@ import {
   RequirementEvidenceMap,
   type RequirementFilter,
 } from "@/components/requirement-evidence-map";
-import { isPhase1AnalysisResult } from "@/lib/analysis-validation";
+import { TailoredDraftPanel } from "@/components/tailored-draft-panel";
+import {
+  isPhase1AnalysisResult,
+  isTailoredDraftResult,
+} from "@/lib/analysis-validation";
 import { splitTextIntoSections } from "@/lib/analysis-utils";
+import { buildTailorInputSignature } from "@/lib/draft-composer";
 import {
   buildRequirementFingerprint,
   CONFIRMED_EVIDENCE_STORAGE_KEY,
@@ -39,6 +44,7 @@ import {
 import type {
   Phase1AnalysisResult,
   SectionText,
+  TailoredDraftResult,
   UserConfirmedEvidence,
   UserEvidenceType,
 } from "@/lib/types";
@@ -54,6 +60,8 @@ type StoredWorkspace = {
   cvFileName: string;
   cvEditorMode: CvEditorMode;
   result: Phase1AnalysisResult | null;
+  tailoredDraft: TailoredDraftResult | null;
+  tailoredDraftSignature: string | null;
   requirementFilter: RequirementFilter;
   savedAt: string;
 };
@@ -123,12 +131,19 @@ export function SmartCvApp() {
     () => splitTextIntoSections(sampleCv, "cv"),
   );
   const [result, setResult] = useState<Phase1AnalysisResult | null>(null);
+  const [tailoredDraft, setTailoredDraft] = useState<TailoredDraftResult | null>(null);
+  const [tailoredDraftSignature, setTailoredDraftSignature] = useState<string | null>(
+    null,
+  );
   const [requirementFilter, setRequirementFilter] =
     useState<RequirementFilter>("all");
   const [confirmedEvidence, setConfirmedEvidence] = useState<UserConfirmedEvidence[]>([]);
   const [confirmationDrafts, setConfirmationDrafts] = useState<
     Record<string, ConfirmationDraft>
   >({});
+  const [draftLoading, setDraftLoading] = useState(false);
+  const [draftError, setDraftError] = useState("");
+  const [copiedDraft, setCopiedDraft] = useState(false);
   const [hasHydrated, setHasHydrated] = useState(false);
 
   const canAnalyze = cvText.trim().length > 80 && jobText.trim().length > 80;
@@ -184,19 +199,34 @@ export function SmartCvApp() {
       const storedConfirmedEvidence = window.localStorage.getItem(
         CONFIRMED_EVIDENCE_STORAGE_KEY,
       );
+      let nextConfirmedEvidence: UserConfirmedEvidence[] = [];
+
+      if (storedConfirmedEvidence) {
+        try {
+          nextConfirmedEvidence = sanitizeUserConfirmedEvidence(
+            JSON.parse(storedConfirmedEvidence),
+          );
+          setConfirmedEvidence(nextConfirmedEvidence);
+        } catch {
+          window.localStorage.removeItem(CONFIRMED_EVIDENCE_STORAGE_KEY);
+        }
+      }
 
       if (stored) {
         try {
           const workspace = JSON.parse(stored) as Partial<StoredWorkspace>;
+          const nextCvText =
+            typeof workspace.cvText === "string" ? workspace.cvText : sampleCv;
+          const nextJobText =
+            typeof workspace.jobText === "string" ? workspace.jobText : sampleJob;
+          const nextDraftSignature = buildTailorInputSignature(
+            nextCvText,
+            nextJobText,
+            nextConfirmedEvidence,
+          );
 
-          setCvText(
-            typeof workspace.cvText === "string" ? workspace.cvText : sampleCv,
-          );
-          setJobText(
-            typeof workspace.jobText === "string"
-              ? workspace.jobText
-              : sampleJob,
-          );
+          setCvText(nextCvText);
+          setJobText(nextJobText);
           setJobUrl(typeof workspace.jobUrl === "string" ? workspace.jobUrl : "");
           setForceLocal(Boolean(workspace.forceLocal));
           setCvFileName(
@@ -211,15 +241,21 @@ export function SmartCvApp() {
             isSectionArray(workspace.parsedCvSections)
               ? workspace.parsedCvSections
               : splitTextIntoSections(
-                  typeof workspace.cvText === "string"
-                    ? workspace.cvText
-                    : sampleCv,
+                  nextCvText,
                   "cv",
                 ),
           );
+          const nextTailoredDraft =
+            isTailoredDraftResult(workspace.tailoredDraft) &&
+            workspace.tailoredDraftSignature === nextDraftSignature
+              ? workspace.tailoredDraft
+              : null;
           setResult(
-            isPhase1AnalysisResult(workspace.result) ? workspace.result : null,
+            nextTailoredDraft?.analysis ??
+              (isPhase1AnalysisResult(workspace.result) ? workspace.result : null),
           );
+          setTailoredDraft(nextTailoredDraft);
+          setTailoredDraftSignature(nextTailoredDraft ? nextDraftSignature : null);
           setRequirementFilter(
             isRequirementFilter(workspace.requirementFilter)
               ? workspace.requirementFilter
@@ -227,16 +263,6 @@ export function SmartCvApp() {
           );
         } catch {
           window.localStorage.removeItem(storageKey);
-        }
-      }
-
-      if (storedConfirmedEvidence) {
-        try {
-          setConfirmedEvidence(
-            sanitizeUserConfirmedEvidence(JSON.parse(storedConfirmedEvidence)),
-          );
-        } catch {
-          window.localStorage.removeItem(CONFIRMED_EVIDENCE_STORAGE_KEY);
         }
       }
 
@@ -258,6 +284,8 @@ export function SmartCvApp() {
       cvFileName,
       cvEditorMode,
       result,
+      tailoredDraft,
+      tailoredDraftSignature,
       requirementFilter,
       savedAt: new Date().toISOString(),
     };
@@ -274,6 +302,8 @@ export function SmartCvApp() {
     parsedCvSections,
     requirementFilter,
     result,
+    tailoredDraft,
+    tailoredDraftSignature,
   ]);
 
   useEffect(() => {
@@ -284,6 +314,13 @@ export function SmartCvApp() {
       JSON.stringify(confirmedEvidence),
     );
   }, [confirmedEvidence, hasHydrated]);
+
+  function invalidateTailoredDraft() {
+    setTailoredDraft(null);
+    setTailoredDraftSignature(null);
+    setCopiedDraft(false);
+    setDraftError("");
+  }
 
   async function fetchJobText() {
     if (!jobUrl.trim()) return;
@@ -302,6 +339,7 @@ export function SmartCvApp() {
       }
       setJobText(payload.text || "");
       setResult(null);
+      invalidateTailoredDraft();
       setRequirementFilter("all");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Job fetch failed.");
@@ -347,6 +385,7 @@ export function SmartCvApp() {
           : splitTextIntoSections(nextCvText, "cv"),
       );
       setResult(null);
+      invalidateTailoredDraft();
       setRequirementFilter("all");
     } catch (reason) {
       setError(
@@ -389,6 +428,7 @@ export function SmartCvApp() {
       }
 
       setResult(payload);
+      invalidateTailoredDraft();
       setRequirementFilter("all");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Analysis failed.");
@@ -406,6 +446,7 @@ export function SmartCvApp() {
     setCvEditorMode("sections");
     setParsedCvSections(splitTextIntoSections(sampleCv, "cv"));
     setResult(null);
+    invalidateTailoredDraft();
     setRequirementFilter("all");
     setError("");
   }
@@ -421,6 +462,7 @@ export function SmartCvApp() {
     setCvEditorMode("sections");
     setParsedCvSections([]);
     setResult(null);
+    invalidateTailoredDraft();
     setRequirementFilter("all");
     setConfirmedEvidence([]);
     setConfirmationDrafts({});
@@ -431,6 +473,7 @@ export function SmartCvApp() {
     setCvText(value);
     setParsedCvSections(splitTextIntoSections(value, "cv"));
     setResult(null);
+    invalidateTailoredDraft();
   }
 
   function updateCvSection(index: number, value: string) {
@@ -440,6 +483,7 @@ export function SmartCvApp() {
     setParsedCvSections(nextSections);
     setCvText(composeCvSections(nextSections));
     setResult(null);
+    invalidateTailoredDraft();
   }
 
   const cvSectionLabels = result
@@ -450,6 +494,14 @@ export function SmartCvApp() {
     : 0;
   const userFactCount = result
     ? result.cv.facts.filter((fact) => fact.source === "user_confirmed").length
+    : 0;
+  const readyDraftItemCount = tailoredDraft
+    ? tailoredDraft.draft.sections
+        .flatMap((section) => section.items)
+        .filter(
+          (item) =>
+            item.reviewState === "ready" && item.type !== "review_note",
+        ).length
     : 0;
 
   function updateConfirmationDraft(
@@ -517,6 +569,7 @@ export function SmartCvApp() {
         text: normalizedText,
       },
     }));
+    invalidateTailoredDraft();
   }
 
   function removeConfirmedEvidence(requirementFingerprint: string) {
@@ -528,6 +581,69 @@ export function SmartCvApp() {
       delete nextDrafts[requirementFingerprint];
       return nextDrafts;
     });
+    invalidateTailoredDraft();
+  }
+
+  async function generateTailoredDraft() {
+    if (!canAnalyze) {
+      setDraftError("Paste enough CV and job text before generating a tailored draft.");
+      return;
+    }
+
+    setDraftError("");
+    setDraftLoading(true);
+
+    try {
+      const response = await fetch("/api/tailor", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          cvText,
+          jobText,
+          jobUrl,
+          forceLocal,
+          confirmedEvidence,
+        }),
+      });
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.error || "Tailored draft generation failed.");
+      }
+
+      if (!isTailoredDraftResult(payload)) {
+        throw new Error("Tailored draft response did not match the Phase 3 schema.");
+      }
+
+      setResult(payload.analysis);
+      setTailoredDraft(payload);
+      setTailoredDraftSignature(
+        buildTailorInputSignature(cvText, jobText, confirmedEvidence),
+      );
+      setCopiedDraft(false);
+    } catch (reason) {
+      setDraftError(
+        reason instanceof Error
+          ? reason.message
+          : "Tailored draft generation failed.",
+      );
+    } finally {
+      setDraftLoading(false);
+    }
+  }
+
+  async function copyValidatedDraft() {
+    if (!tailoredDraft?.draft.copyText.trim()) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(tailoredDraft.draft.copyText);
+      setCopiedDraft(true);
+      window.setTimeout(() => setCopiedDraft(false), 2000);
+    } catch {
+      setDraftError("Could not copy the validated draft to the clipboard.");
+    }
   }
 
   return (
@@ -629,6 +745,7 @@ export function SmartCvApp() {
                     onChange={(event) => {
                       setJobUrl(event.target.value);
                       setResult(null);
+                      invalidateTailoredDraft();
                     }}
                     placeholder="https://..."
                     className="h-9 w-full rounded-md border border-zinc-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-emerald-600"
@@ -658,6 +775,7 @@ export function SmartCvApp() {
               onChange={(value) => {
                 setJobText(value);
                 setResult(null);
+                invalidateTailoredDraft();
               }}
               rows={11}
             />
@@ -687,7 +805,10 @@ export function SmartCvApp() {
               <input
                 type="checkbox"
                 checked={forceLocal}
-                onChange={(event) => setForceLocal(event.target.checked)}
+                onChange={(event) => {
+                  setForceLocal(event.target.checked);
+                  invalidateTailoredDraft();
+                }}
                 className="h-4 w-4 accent-emerald-700"
               />
             </label>
@@ -732,6 +853,14 @@ export function SmartCvApp() {
                   onRemove={removeConfirmedEvidence}
                   onRunAnalysis={analyze}
                   onSave={saveConfirmedEvidence}
+                />
+                <TailoredDraftPanel
+                  copied={copiedDraft}
+                  draftError={draftError}
+                  draftLoading={draftLoading}
+                  onCopy={copyValidatedDraft}
+                  onGenerate={generateTailoredDraft}
+                  result={tailoredDraft}
                 />
               </>
             ) : null}
@@ -822,6 +951,26 @@ export function SmartCvApp() {
                     value={String(staleConfirmationCount)}
                   />
                 </SummaryCard>
+
+                {tailoredDraft ? (
+                  <SummaryCard title="Tailored draft">
+                    <SummaryLine
+                      label="Status"
+                      value={
+                        tailoredDraft.draft.status === "needs_review"
+                          ? "Needs review"
+                          : tailoredDraft.draft.status
+                              .charAt(0)
+                              .toUpperCase() +
+                            tailoredDraft.draft.status.slice(1)
+                      }
+                    />
+                    <SummaryLine
+                      label="Copy-ready items"
+                      value={String(readyDraftItemCount)}
+                    />
+                  </SummaryCard>
+                ) : null}
 
                 <SummaryCard title="Score breakdown">
                   <SummaryLine
@@ -1122,7 +1271,7 @@ function WorkspaceGuide() {
     <div className="rounded-md border border-zinc-200 bg-white p-4">
       <div className="mb-3 flex items-center gap-2">
         <ShieldCheck className="h-5 w-5 text-emerald-700" aria-hidden="true" />
-        <h2 className="text-base font-semibold">Phase 2 flow</h2>
+        <h2 className="text-base font-semibold">Phase 3 flow</h2>
       </div>
       <div className="space-y-3">
         <MiniStep
@@ -1140,6 +1289,10 @@ function WorkspaceGuide() {
         <MiniStep
           title="4. Confirm"
           text="Add truthful evidence for weak, missing, or blocked requirements and re-run the analysis."
+        />
+        <MiniStep
+          title="5. Tailor"
+          text="Generate a deterministic tailored draft that stays anchored to supported evidence."
         />
       </div>
     </div>

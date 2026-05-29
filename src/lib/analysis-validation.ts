@@ -1,8 +1,10 @@
 import { findAnchor, normalizeText } from "@/lib/analysis-utils";
 import type {
+  DraftValidationIssue,
   GroundedOpenAIAssist,
   OpenAIAssistResult,
   Phase1AnalysisResult,
+  TailoredDraftResult,
 } from "@/lib/types";
 
 export function isPhase1AnalysisResult(
@@ -37,6 +39,50 @@ export function isPhase1AnalysisResult(
         ),
     ) &&
     Array.isArray(result.ats?.warnings)
+  );
+}
+
+export function isTailoredDraftResult(
+  value: unknown,
+): value is TailoredDraftResult {
+  if (!value || typeof value !== "object") return false;
+
+  const result = value as Partial<TailoredDraftResult>;
+
+  return (
+    result.meta?.version === "phase3.v1" &&
+    result.meta.mode === "local" &&
+    isPhase1AnalysisResult(result.analysis) &&
+    Array.isArray(result.draft?.sections) &&
+    result.draft.sections.every(
+      (section) =>
+        section &&
+        typeof section === "object" &&
+        typeof section.id === "string" &&
+        typeof section.title === "string" &&
+        Array.isArray(section.items) &&
+        section.items.every(
+          (item) =>
+            item &&
+            typeof item === "object" &&
+            typeof item.id === "string" &&
+            typeof item.type === "string" &&
+            typeof item.text === "string" &&
+            Array.isArray(item.evidenceIds) &&
+            Array.isArray(item.requirementIds) &&
+            typeof item.sourceLabel === "string" &&
+            typeof item.reviewState === "string" &&
+            Array.isArray(item.warnings) &&
+            item.warnings.every(isDraftValidationIssue),
+        ),
+    ) &&
+    typeof result.draft.copyText === "string" &&
+    Array.isArray(result.validation?.issues) &&
+    result.validation.issues.every(isDraftValidationIssue) &&
+    Array.isArray(result.validation?.blockedRequirementIds) &&
+    Array.isArray(result.validation?.missingHighImportanceRequirementIds) &&
+    typeof result.validation?.userConfirmedOnlyItemCount === "number" &&
+    typeof result.validation?.droppedItemCount === "number"
   );
 }
 
@@ -90,4 +136,23 @@ function groundTitle(jobText: string, title?: string) {
 
   const anchors = findAnchor(jobText, normalizedTitle, "job");
   return anchors.length ? normalizedTitle : undefined;
+}
+
+function isDraftValidationIssue(value: unknown): value is DraftValidationIssue {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const issue = value as Partial<DraftValidationIssue>;
+
+  return (
+    typeof issue.id === "string" &&
+    (!issue.itemId || typeof issue.itemId === "string") &&
+    (issue.severity === "info" ||
+      issue.severity === "warning" ||
+      issue.severity === "critical") &&
+    typeof issue.category === "string" &&
+    typeof issue.message === "string" &&
+    typeof issue.recommendation === "string"
+  );
 }

@@ -46,6 +46,8 @@ export type AnalyzeRequest = {
   confirmedEvidence?: UserConfirmedEvidence[];
 };
 
+export type TailorRequest = AnalyzeRequest;
+
 export interface SectionText {
   label: string;
   text: string;
@@ -192,4 +194,89 @@ export interface Phase1AnalysisResult {
     warnings: ATSHygieneWarning[];
   };
   scoring: Scoring;
+}
+
+export type DraftItemType =
+  | "header_line"
+  | "summary_bullet"
+  | "skills_line"
+  | "experience_bullet"
+  | "project_bullet"
+  | "credential_line"
+  | "language_line"
+  | "review_note";
+
+export type DraftItemReviewState = "ready" | "needs_review" | "dropped";
+
+export type DraftSourceLabel =
+  | "cv_only"
+  | "user_confirmed_only"
+  | "mixed"
+  | "passthrough";
+
+export type DraftStatus = "ready" | "needs_review" | "blocked";
+
+export interface DraftValidationIssue {
+  id: string;
+  itemId?: string;
+  severity: "info" | "warning" | "critical";
+  category:
+    | "unsupported_claim"
+    | "missing_requirement_support"
+    | "blocked_requirement"
+    | "unverified_metric"
+    | "unverified_years"
+    | "user_confirmed_only"
+    | "missing_anchor"
+    | "copy_excluded";
+  message: string;
+  recommendation: string;
+}
+
+export interface TailoredDraftItem {
+  id: string;
+  type: DraftItemType;
+  text: string;
+  evidenceIds: string[];
+  requirementIds: string[];
+  sourceLabel: DraftSourceLabel;
+  reviewState: DraftItemReviewState;
+  warnings: DraftValidationIssue[];
+}
+
+export interface TailoredDraftSection {
+  id:
+    | "header"
+    | "summary"
+    | "skills"
+    | "experience"
+    | "projects"
+    | "education"
+    | "certifications"
+    | "languages"
+    | "review_notes";
+  title: string;
+  items: TailoredDraftItem[];
+}
+
+export interface TailoredDraftResult {
+  meta: {
+    version: "phase3.v1";
+    generatedAt: string;
+    mode: "local";
+    warnings: string[];
+  };
+  analysis: Phase1AnalysisResult;
+  draft: {
+    status: DraftStatus;
+    sections: TailoredDraftSection[];
+    copyText: string;
+  };
+  validation: {
+    issues: DraftValidationIssue[];
+    blockedRequirementIds: string[];
+    missingHighImportanceRequirementIds: string[];
+    userConfirmedOnlyItemCount: number;
+    droppedItemCount: number;
+  };
 }
