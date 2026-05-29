@@ -9,6 +9,7 @@ const CV_HEADING_ALIASES = new Set([
   "work history",
   "professional experience",
   "projects",
+  "project experience",
   "skills",
   "technical skills",
   "core skills",
@@ -23,24 +24,30 @@ const CV_HEADING_ALIASES = new Set([
 
 const JOB_HEADING_ALIASES = new Set([
   "about the role",
-  "about you",
   "about this role",
-  "requirements",
-  "required skills",
-  "required qualifications",
-  "minimum qualifications",
-  "minimum requirements",
-  "preferred qualifications",
-  "preferred skills",
-  "nice to have",
-  "responsibilities",
-  "duties",
+  "about you",
   "what you will do",
   "what you'll do",
-  "experience",
-  "skills",
+  "what you bring",
+  "who you are",
+  "you have",
+  "requirements",
+  "minimum requirements",
+  "minimum qualifications",
   "qualifications",
+  "required qualifications",
+  "required skills",
+  "skills and experience",
+  "experience",
+  "responsibilities",
+  "duties",
   "must have",
+  "must haves",
+  "nice to have",
+  "nice to haves",
+  "preferred skills",
+  "preferred qualifications",
+  "we are looking for",
   "what we're looking for",
   "what we are looking for",
   "your profile",
@@ -64,11 +71,9 @@ const STOP_WORDS = new Set([
   "being",
   "both",
   "by",
-  "can",
-  "company",
   "for",
   "from",
-  "have",
+  "if",
   "in",
   "into",
   "is",
@@ -79,12 +84,14 @@ const STOP_WORDS = new Set([
   "on",
   "or",
   "our",
-  "role",
+  "per",
+  "than",
   "that",
   "the",
   "their",
   "this",
   "to",
+  "up",
   "using",
   "we",
   "will",
@@ -95,19 +102,33 @@ const STOP_WORDS = new Set([
 
 const GENERIC_TERMS = new Set([
   "ability",
+  "adaptable",
+  "business",
   "candidate",
-  "collaborate",
+  "clients",
+  "collaboration",
+  "collaborative",
   "company",
+  "cross functional",
+  "customer",
+  "deliver",
+  "delivering",
+  "dynamic",
+  "effective",
   "environment",
+  "excellent",
   "experience",
-  "good",
   "great",
-  "high",
-  "knowledge",
+  "help",
+  "manage",
+  "management",
+  "managing",
   "professional",
+  "responsible",
   "role",
   "skills",
   "strong",
+  "success",
   "support",
   "team",
   "teams",
@@ -115,13 +136,91 @@ const GENERIC_TERMS = new Set([
   "working",
 ]);
 
-const SYNONYM_MAP = new Map<string, string>([
+const STRONG_NORMALIZATION_MAP = new Map<string, string>([
   ["js", "javascript"],
   ["ts", "typescript"],
   ["postgres", "postgresql"],
-  ["jira service management", "jira"],
-  ["customer support", "technical support"],
-  ["reporting", "dashboards"],
+  ["node", "node.js"],
+  ["reactjs", "react"],
+  ["k8s", "kubernetes"],
+  ["powerbi", "power bi"],
+]);
+
+export const WEAK_SYNONYM_MAP = new Map<string, string[]>([
+  ["crm", ["salesforce", "hubspot"]],
+  ["reporting", ["dashboards"]],
+  ["customer support", ["technical support"]],
+  ["ticketing tool", ["zendesk", "jira"]],
+  ["ticketing tools", ["zendesk", "jira"]],
+  ["service desk", ["help desk"]],
+  ["helpdesk", ["help desk"]],
+  ["bi", ["power bi", "tableau"]],
+]);
+
+export const KNOWN_LANGUAGES = new Set([
+  "arabic",
+  "dutch",
+  "english",
+  "french",
+  "german",
+  "hindi",
+  "italian",
+  "japanese",
+  "mandarin",
+  "polish",
+  "portuguese",
+  "spanish",
+  "turkish",
+]);
+
+export const KNOWN_DEGREE_HINTS = new Set([
+  "associate",
+  "bachelor",
+  "bachelor's",
+  "college",
+  "degree",
+  "diploma",
+  "master",
+  "master's",
+  "mba",
+  "phd",
+  "university",
+]);
+
+export const KNOWN_CERTIFICATION_HINTS = new Set([
+  "aws certified",
+  "certificate",
+  "certification",
+  "certified",
+  "csm",
+  "itil",
+  "pmp",
+  "scrum master",
+]);
+
+const KNOWN_MULTIWORD_PHRASES = new Set([
+  "api troubleshooting",
+  "b2b saas",
+  "customer support",
+  "dashboard reporting",
+  "data analysis",
+  "driving license",
+  "incident management",
+  "jira service management",
+  "project management",
+  "power bi",
+  "python scripting",
+  "rest api",
+  "root cause analysis",
+  "salesforce administration",
+  "security clearance",
+  "service desk",
+  "sla reporting",
+  "sql queries",
+  "stakeholder management",
+  "technical support",
+  "ticketing tool",
+  "work authorization",
 ]);
 
 export const KNOWN_TOOLS = new Set([
@@ -148,26 +247,22 @@ export const KNOWN_TOOLS = new Set([
   "java",
   "javascript",
   "jira",
-  "js",
   "kubernetes",
   "linux",
   "mongodb",
   "mysql",
-  "node",
   "node.js",
   "notion",
   "oracle",
   "pagerduty",
-  "postgres",
   "postgresql",
   "power bi",
-  "powerbi",
   "python",
   "react",
   "redis",
+  "rest api",
   "salesforce",
   "sap",
-  "service now",
   "servicenow",
   "slack",
   "snowflake",
@@ -175,7 +270,6 @@ export const KNOWN_TOOLS = new Set([
   "tableau",
   "terraform",
   "trello",
-  "ts",
   "typescript",
   "windows",
   "zendesk",
@@ -228,10 +322,10 @@ export function splitTextIntoSections(
 }
 
 export function splitIntoSentences(text: string) {
-  return text
+  return normalizeText(text)
     .split(/(?<=[.!?])\s+|\n+/)
     .map((sentence) => sentence.trim())
-    .filter((sentence) => sentence.length > 18);
+    .filter((sentence) => sentence.length > 12);
 }
 
 export function cleanListItem(text: string) {
@@ -241,33 +335,63 @@ export function cleanListItem(text: string) {
     .trim();
 }
 
+export function extractDelimitedItems(text: string) {
+  const normalized = cleanListItem(text);
+  if (!normalized) return [];
+
+  const rawParts = normalized
+    .split(/\s*[|;,]\s*|\s{2,}/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (rawParts.length <= 1 && normalized.includes(",")) {
+    return normalized
+      .split(/\s*,\s*/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+  }
+
+  return rawParts.length ? rawParts : [normalized];
+}
+
 export function extractKeywords(text: string, limit = 16) {
+  const normalizedText = normalizeText(text).toLowerCase();
   const tokens = tokenize(text);
   const scores = new Map<string, number>();
 
   for (let i = 0; i < tokens.length; i += 1) {
     const token = canonicalizeToken(tokens[i]);
-    if (shouldSkipToken(token)) continue;
-    addPhraseScore(scores, token, scoreToken(token, 1));
+    if (!isUsefulToken(token)) continue;
+    addPhraseScore(scores, token, scoreCandidate(token, 1, normalizedText));
 
     for (let size = 2; size <= 3; size += 1) {
       const slice = tokens.slice(i, i + size).map(canonicalizeToken);
       if (slice.length !== size) continue;
       const phrase = slice.join(" ");
       if (!isUsefulPhrase(slice, phrase)) continue;
-      addPhraseScore(scores, phrase, scoreToken(phrase, size));
+      addPhraseScore(scores, phrase, scoreCandidate(phrase, size, normalizedText));
     }
   }
 
   return [...scores.entries()]
-    .sort((a, b) => b[1] - a[1] || b[0].length - a[0].length || a[0].localeCompare(b[0]))
+    .sort(
+      (a, b) =>
+        b[1] - a[1] || b[0].length - a[0].length || a[0].localeCompare(b[0]),
+    )
     .slice(0, limit)
     .map(([phrase]) => phrase);
 }
 
 export function normalizeKeywordPhrase(value: string) {
-  const normalized = tokenize(value).map(canonicalizeToken).join(" ").trim();
-  return SYNONYM_MAP.get(normalized) ?? normalized;
+  const tokens = tokenize(value).map(canonicalizeToken);
+  const normalized = tokens.join(" ").trim();
+  if (!normalized) return "";
+
+  if (normalized === "rest") {
+    return value.toLowerCase().includes("api") ? "rest api" : "rest";
+  }
+
+  return STRONG_NORMALIZATION_MAP.get(normalized) ?? normalized;
 }
 
 export function expandKeywordVariants(keywords: string[]) {
@@ -279,18 +403,18 @@ export function expandKeywordVariants(keywords: string[]) {
     expanded.add(normalized);
 
     for (const token of normalized.split(" ")) {
-      if (!shouldSkipToken(token)) {
+      if (isUsefulToken(token)) {
         expanded.add(token);
       }
-    }
-
-    if (normalized === "crm") {
-      expanded.add("salesforce");
-      expanded.add("hubspot");
     }
   }
 
   return [...expanded];
+}
+
+export function getWeakSynonyms(value: string) {
+  const normalized = normalizeKeywordPhrase(value);
+  return WEAK_SYNONYM_MAP.get(normalized) ?? [];
 }
 
 export function isGenericKeyword(value: string) {
@@ -391,6 +515,33 @@ export function countOccurrences(text: string, phrase: string) {
   return count;
 }
 
+export function parseNumericValue(value: string) {
+  const lower = value.toLowerCase();
+  const digitMatch = lower.match(/\b(\d{1,2})\b/);
+  if (digitMatch) return Number(digitMatch[1]);
+
+  const wordValues: Record<string, number> = {
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
+  };
+
+  for (const [word, numericValue] of Object.entries(wordValues)) {
+    if (new RegExp(`\\b${word}\\b`, "i").test(lower)) {
+      return numericValue;
+    }
+  }
+
+  return null;
+}
+
 export function titleCase(value: string) {
   return value
     .split(" ")
@@ -414,7 +565,7 @@ function looksLikeHeading(
 }
 
 function tokenize(text: string) {
-  return text
+  return normalizeText(text)
     .toLowerCase()
     .replace(/[^a-z0-9+#./ -]/g, " ")
     .split(/\s+/)
@@ -424,24 +575,30 @@ function tokenize(text: string) {
 
 function canonicalizeToken(token: string) {
   const cleaned = token.replace(/^[./-]+|[./-]+$/g, "");
-  return SYNONYM_MAP.get(cleaned) ?? cleaned;
+  return STRONG_NORMALIZATION_MAP.get(cleaned) ?? cleaned;
 }
 
-function shouldSkipToken(token: string) {
-  return !token || STOP_WORDS.has(token) || /^[0-9]+$/.test(token) || token.length < 2;
+function isUsefulToken(token: string) {
+  if (!token || STOP_WORDS.has(token) || /^[0-9]+$/.test(token)) return false;
+  if (KNOWN_TOOLS.has(token) || KNOWN_LANGUAGES.has(token)) return true;
+  if (KNOWN_DEGREE_HINTS.has(token) || KNOWN_CERTIFICATION_HINTS.has(token)) {
+    return true;
+  }
+  return !GENERIC_TERMS.has(token) && token.length >= 2;
 }
 
 function isUsefulPhrase(tokens: string[], phrase: string) {
   if (phrase.length < 4) return false;
-  if (tokens.every((token) => shouldSkipToken(token) || GENERIC_TERMS.has(token))) {
-    return false;
-  }
+  if (tokens.every((token) => !isUsefulToken(token))) return false;
 
-  const meaningfulTokenCount = tokens.filter(
-    (token) => !shouldSkipToken(token) && !GENERIC_TERMS.has(token),
-  ).length;
+  const meaningfulTokenCount = tokens.filter(isUsefulToken).length;
+  if (!meaningfulTokenCount) return false;
 
-  return meaningfulTokenCount > 0;
+  return (
+    KNOWN_MULTIWORD_PHRASES.has(phrase) ||
+    meaningfulTokenCount >= 2 ||
+    tokens.some((token) => KNOWN_TOOLS.has(token) || KNOWN_LANGUAGES.has(token))
+  );
 }
 
 function addPhraseScore(scores: Map<string, number>, phrase: string, score: number) {
@@ -449,8 +606,16 @@ function addPhraseScore(scores: Map<string, number>, phrase: string, score: numb
   scores.set(phrase, (scores.get(phrase) ?? 0) + score);
 }
 
-function scoreToken(value: string, size: number) {
+function scoreCandidate(candidate: string, size: number, normalizedText: string) {
+  const occurrenceCount = Math.max(1, countOccurrences(normalizedText, candidate));
   const technicalBonus =
-    KNOWN_TOOLS.has(value) || /[#.+/]/.test(value) ? 2 : value.length > 10 ? 1 : 0;
-  return size * 2 + technicalBonus;
+    KNOWN_MULTIWORD_PHRASES.has(candidate) ||
+    KNOWN_TOOLS.has(candidate) ||
+    KNOWN_LANGUAGES.has(candidate) ||
+    /[#.+/]/.test(candidate)
+      ? 3
+      : candidate.length > 10
+        ? 1
+        : 0;
+  return size * 2 + technicalBonus + occurrenceCount;
 }

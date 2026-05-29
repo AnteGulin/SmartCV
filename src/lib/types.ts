@@ -100,10 +100,12 @@ export interface Scoring {
   evidenceConfidenceScore: number;
   overallReadinessScore: number;
   breakdown: {
+    totalRequirementWeight: number;
     supportedWeight: number;
     weakWeight: number;
     missingWeight: number;
     blockedWeight: number;
+    blockedHardBlockerPenalty: number;
     atsPenalty: number;
   };
 }

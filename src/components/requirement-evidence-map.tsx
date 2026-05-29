@@ -95,6 +95,11 @@ export function RequirementEvidenceMap({
                         ? `Job section: ${requirement.sourceSection}`
                         : "Job section: General"}
                     </p>
+                    {requirement.evidenceStatus !== "supported" ? (
+                      <p className="mt-2 text-xs font-medium uppercase tracking-[0.08em] text-zinc-500">
+                        {getReviewHint(requirement.evidenceStatus)}
+                      </p>
+                    ) : null}
                   </div>
                   <div className="text-right text-sm text-zinc-500">
                     {bestEvidence ? (
@@ -181,4 +186,10 @@ function CategoryPill({ category }: { category: JobRequirement["category"] }) {
 
 function titleCase(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function getReviewHint(status: EvidenceStatus) {
+  if (status === "weak") return "Needs confirmation";
+  if (status === "missing") return "Missing evidence";
+  return "Hard blocker unresolved";
 }

@@ -639,6 +639,29 @@ export function SmartCvApp() {
                   />
                 </SummaryCard>
 
+                <SummaryCard title="Score breakdown">
+                  <SummaryLine
+                    label="Requirement weight"
+                    value={String(result.scoring.breakdown.totalRequirementWeight)}
+                  />
+                  <SummaryLine
+                    label="Supported weight"
+                    value={String(result.scoring.breakdown.supportedWeight)}
+                  />
+                  <SummaryLine
+                    label="Weak weight"
+                    value={String(result.scoring.breakdown.weakWeight)}
+                  />
+                  <SummaryLine
+                    label="Blocked penalty"
+                    value={String(result.scoring.breakdown.blockedHardBlockerPenalty)}
+                  />
+                  <SummaryLine
+                    label="ATS penalty"
+                    value={String(result.scoring.breakdown.atsPenalty)}
+                  />
+                </SummaryCard>
+
                 <AtsHygienePanel warnings={result.ats.warnings} />
               </>
             ) : (

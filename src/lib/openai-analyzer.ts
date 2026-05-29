@@ -43,10 +43,11 @@ export async function analyzeWithOpenAI(
         content: [
           "You assist SmartCV with extraction only.",
           "Extract explicit job requirements, qualifications, tools, responsibilities, and hard blockers from the job text.",
+          "Look especially at sections such as requirements, qualifications, minimum qualifications, preferred qualifications, what you will do, about you, you have, and skills and experience.",
           "Never invent experience or rewrite the CV.",
           "For every extracted requirement, provide an anchorSnippet copied from the job text.",
           "Keep requirement text short, faithful, and recruiter-readable.",
-          "Ignore benefits, marketing copy, and equal-opportunity boilerplate.",
+          "Ignore benefits, company marketing, application instructions, privacy/legal text, and equal-opportunity boilerplate.",
           "If you are unsure, omit the item instead of guessing.",
         ].join(" "),
       },

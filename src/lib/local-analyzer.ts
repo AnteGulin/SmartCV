@@ -1,17 +1,23 @@
 import {
+  KNOWN_CERTIFICATION_HINTS,
+  KNOWN_DEGREE_HINTS,
+  KNOWN_LANGUAGES,
   KNOWN_TOOLS,
   clamp,
   cleanListItem,
   countOccurrences,
   dedupeByNormalizedText,
   expandKeywordVariants,
+  extractDelimitedItems,
   extractKeywords,
   findAnchor,
+  getWeakSynonyms,
   hasDateLikeText,
   hasEducationLikeText,
   isGenericKeyword,
   normalizeKeywordPhrase,
   normalizeText,
+  parseNumericValue,
   splitIntoSentences,
   splitTextIntoSections,
   uniqueStrings,
@@ -34,111 +40,14 @@ import type {
 
 const DEFAULT_LOCAL_MODEL = "local-deterministic-evidence-engine";
 
-const HARD_BLOCKER_PATTERNS = [
-  /\bwork authorization\b/i,
-  /\bvisa\b/i,
-  /\bcitizen(ship)?\b/i,
-  /\bsecurity clearance\b/i,
-  /\bclearance\b/i,
-  /\bdriver'?s license\b/i,
-  /\bdriving license\b/i,
-  /\blicense required\b/i,
-  /\bcertification required\b/i,
-  /\bdegree required\b/i,
-  /\bbachelor'?s?\b/i,
-  /\bmaster'?s?\b/i,
-  /\bon[- ]site\b/i,
-  /\bhybrid\b/i,
-  /\bin[- ]office\b/i,
-  /\btravel\b/i,
-  /\bfluent\b/i,
-  /\bnative\b/i,
-  /\blanguage\b/i,
-];
-
-const MUST_HAVE_PATTERNS = [
-  /\bmust\b/i,
-  /\brequired\b/i,
-  /\bminimum\b/i,
-  /\bneed\b/i,
-  /\bmandatory\b/i,
-  /\bat least\b/i,
-  /\bproven experience\b/i,
-  /\byears? of experience\b/i,
-];
-
-const NICE_TO_HAVE_PATTERNS = [
-  /\bpreferred\b/i,
-  /\bnice to have\b/i,
-  /\bbonus\b/i,
-  /\bplus\b/i,
-  /\badvantage\b/i,
-  /\bdesirable\b/i,
-  /\bwould be great\b/i,
-];
-
-const RESPONSIBILITY_PATTERNS = [
-  /\byou will\b/i,
-  /\bresponsible for\b/i,
-  /\bmanage\b/i,
-  /\bdeliver\b/i,
-  /\bsupport\b/i,
-  /\bmaintain\b/i,
-  /\bbuild\b/i,
-  /\bown\b/i,
-  /\bdrive\b/i,
-  /\blead\b/i,
-];
-
-const DOMAIN_KEYWORDS = [
-  "saas",
-  "healthcare",
-  "finance",
-  "fintech",
-  "ecommerce",
-  "telecom",
-  "manufacturing",
-  "b2b",
-  "b2c",
-  "support operations",
-  "customer success",
-  "technical support",
-];
-
-const SOFT_SKILL_KEYWORDS = [
-  "communication",
-  "stakeholder",
-  "collaboration",
-  "leadership",
-  "problem solving",
-  "ownership",
-  "teamwork",
-  "presentation",
-  "organized",
-  "adaptable",
-];
-
-const JOB_BOILERPLATE_PATTERNS = [
-  /equal opportunity/i,
-  /all qualified applicants/i,
-  /backgrounds/i,
-  /benefits/i,
-  /compensation/i,
-  /salary/i,
-  /privacy/i,
-  /cookie/i,
-  /our mission/i,
-  /about us/i,
-  /join our team/i,
-];
-
 const EXPERIENCE_SECTIONS = new Set([
   "experience",
   "employment",
   "work history",
   "professional experience",
-  "projects",
 ]);
+
+const PROJECT_SECTIONS = new Set(["projects", "project experience"]);
 
 const SKILLS_SECTIONS = new Set([
   "skills",
@@ -148,13 +57,203 @@ const SKILLS_SECTIONS = new Set([
   "technologies",
 ]);
 
-const EDUCATION_SECTIONS = new Set([
-  "education",
-  "certifications",
-  "licenses",
-]);
+const EDUCATION_SECTIONS = new Set(["education"]);
 
-const SUMMARY_SECTIONS = new Set(["summary", "profile", "objective", "header"]);
+const CERTIFICATION_SECTIONS = new Set(["certifications", "licenses"]);
+
+const LANGUAGE_SECTIONS = new Set(["languages"]);
+
+const SUMMARY_SECTIONS = new Set(["summary", "profile", "objective"]);
+
+const HEADER_SECTIONS = new Set(["header"]);
+
+const BOILERPLATE_SECTION_PATTERNS = [
+  /\babout us\b/i,
+  /\bbenefits\b/i,
+  /\bcompensation\b/i,
+  /\bdiversity\b/i,
+  /\bequal opportunity\b/i,
+  /\bhow to apply\b/i,
+  /\bour culture\b/i,
+  /\bour mission\b/i,
+  /\bperks\b/i,
+  /\bprivacy\b/i,
+  /\bprocess\b/i,
+  /\bwhy join\b/i,
+];
+
+const BOILERPLATE_TEXT_PATTERNS = [
+  /\ball qualified applicants\b/i,
+  /\bapply now\b/i,
+  /\bbackground check\b/i,
+  /\bbenefits include\b/i,
+  /\bclick apply\b/i,
+  /\bequal opportunity employer\b/i,
+  /\bflexible work\b/i,
+  /\bhealth insurance\b/i,
+  /\bonly shortlisted candidates\b/i,
+  /\bprivacy policy\b/i,
+  /\bsubmit your application\b/i,
+  /\bwe value diversity\b/i,
+];
+
+const REQUIREMENT_SECTION_PATTERNS = [
+  /\brequire/i,
+  /\bqualif/i,
+  /\bskills and experience\b/i,
+  /\byou have\b/i,
+  /\bwe are looking for\b/i,
+  /\bwhat we are looking for\b/i,
+  /\bmust have\b/i,
+  /\babout you\b/i,
+  /\byour profile\b/i,
+];
+
+const RESPONSIBILITY_SECTION_PATTERNS = [
+  /\bresponsibilit/i,
+  /\bdut/i,
+  /\bwhat you will do\b/i,
+  /\bwhat you'll do\b/i,
+];
+
+const PREFERRED_SECTION_PATTERNS = [
+  /\bpreferred\b/i,
+  /\bnice to have\b/i,
+  /\bbonus\b/i,
+];
+
+const MUST_HAVE_PATTERNS = [
+  /\bat least\b/i,
+  /\bmust\b/i,
+  /\bmandatory\b/i,
+  /\bminimum\b/i,
+  /\bneed\b/i,
+  /\bproven experience\b/i,
+  /\brequired\b/i,
+  /\byears? of experience\b/i,
+];
+
+const NICE_TO_HAVE_PATTERNS = [
+  /\badvantage\b/i,
+  /\bbonus\b/i,
+  /\bdesirable\b/i,
+  /\bnice to have\b/i,
+  /\bplus\b/i,
+  /\bpreferred\b/i,
+  /\bwould be great\b/i,
+];
+
+const RESPONSIBILITY_PATTERNS = [
+  /\bbuild\b/i,
+  /\bdeliver\b/i,
+  /\bdrive\b/i,
+  /\blead\b/i,
+  /\bmaintain\b/i,
+  /\bmanage\b/i,
+  /\bown\b/i,
+  /\bresponsible for\b/i,
+  /\bsupport\b/i,
+  /\byou will\b/i,
+];
+
+const HARD_BLOCKER_PATTERNS = [
+  /\bauthori[sz]ed to work\b/i,
+  /\bbased in\b/i,
+  /\bbachelor'?s?\b/i,
+  /\bcertification required\b/i,
+  /\bcitizen(ship)?\b/i,
+  /\bclearance\b/i,
+  /\bdegree required\b/i,
+  /\bdriver'?s license\b/i,
+  /\bdriving license\b/i,
+  /\beligible to work\b/i,
+  /\bfluent\b/i,
+  /\bhybrid\b/i,
+  /\bin-office\b/i,
+  /\blanguage\b/i,
+  /\blicense required\b/i,
+  /\blocated in\b/i,
+  /\bmaster'?s?\b/i,
+  /\bmust reside\b/i,
+  /\bnative\b/i,
+  /\bon-site\b/i,
+  /\bonsite\b/i,
+  /\bphd\b/i,
+  /\bright to work\b/i,
+  /\bsecurity clearance\b/i,
+  /\bshift\b/i,
+  /\bsponsorship\b/i,
+  /\btime zone\b/i,
+  /\btimezone\b/i,
+  /\btravel\b/i,
+  /\bvisa\b/i,
+  /\bwork authorization\b/i,
+];
+
+const DOMAIN_KEYWORDS = [
+  "b2b",
+  "b2c",
+  "customer success",
+  "ecommerce",
+  "finance",
+  "fintech",
+  "healthcare",
+  "manufacturing",
+  "root cause analysis",
+  "saas",
+  "support operations",
+  "technical support",
+  "telecom",
+];
+
+const SOFT_SKILL_KEYWORDS = [
+  "collaboration",
+  "communication",
+  "leadership",
+  "ownership",
+  "presentation",
+  "problem solving",
+  "stakeholder management",
+  "stakeholder",
+  "teamwork",
+];
+
+const LANGUAGE_PROFICIENCY_PATTERNS = [
+  /\bb1\b/i,
+  /\bb2\b/i,
+  /\bc1\b/i,
+  /\bc2\b/i,
+  /\bfluent\b/i,
+  /\bnative\b/i,
+  /\bprofessional proficiency\b/i,
+  /\bproficient\b/i,
+];
+
+const AUTHORIZATION_PATTERNS = [
+  /\bauthori[sz]ed to work\b/i,
+  /\beu citizen\b/i,
+  /\bright to work\b/i,
+  /\bsponsorship not required\b/i,
+  /\bvisa\b/i,
+  /\bwork permit\b/i,
+];
+
+const CLEARANCE_PATTERNS = [/\bsecurity clearance\b/i, /\bsc clearance\b/i, /\bclearance\b/i];
+
+const DRIVING_LICENSE_PATTERNS = [/\bdriver'?s license\b/i, /\bdriving license\b/i];
+
+const TRAVEL_PATTERNS = [/\btravel\b/i, /\bwilling(?:ness)? to travel\b/i];
+
+const SHIFT_PATTERNS = [
+  /\bcet\b/i,
+  /\bcest\b/i,
+  /\best\b/i,
+  /\bnight shift\b/i,
+  /\bpst\b/i,
+  /\brotating shift\b/i,
+  /\btime ?zone\b/i,
+  /\bweekend\b/i,
+];
 
 type AnalyzeLocallyOptions = {
   assistant?: GroundedOpenAIAssist;
@@ -163,16 +262,82 @@ type AnalyzeLocallyOptions = {
   warnings?: string[];
 };
 
+type FactKind =
+  | "experience"
+  | "project"
+  | "skills"
+  | "summary"
+  | "education"
+  | "certification"
+  | "language"
+  | "header"
+  | "other";
+
+type HardBlockerKind =
+  | "authorization"
+  | "location"
+  | "language"
+  | "degree"
+  | "certification"
+  | "clearance"
+  | "driving_license"
+  | "travel"
+  | "shift"
+  | "other";
+
+type SectionIntent =
+  | "boilerplate"
+  | "must_have"
+  | "preferred"
+  | "responsibility"
+  | "about_you"
+  | "general";
+
+type RequirementSignal = {
+  hardBlockerKind?: HardBlockerKind;
+  locationPhrase?: string;
+  locationTokens: string[];
+  explicitLanguageTerms: string[];
+  explicitDegreeTerms: string[];
+  explicitCertificationTerms: string[];
+  requiredYears?: number;
+  specificKeywords: string[];
+  toolKeywords: string[];
+};
+
 type IndexedFact = CandidateFact & {
+  factKind: FactKind;
   searchText: string;
   normalizedKeywords: string[];
+  weakKeywordVariants: string[];
   sectionWeight: number;
+  explicitLanguages: string[];
+  explicitDegreeTerms: string[];
+  explicitCertificationTerms: string[];
+  explicitAuthorization: boolean;
+  explicitClearance: boolean;
+  explicitDrivingLicense: boolean;
+  explicitTravel: boolean;
+  explicitShiftAvailability: boolean;
+  locationTokens: string[];
+  derivedYears: number | null;
+  explicitYears: number | null;
 };
 
 type RawRequirement = {
   text: string;
   sourceSection?: string;
   anchors: TextAnchor[];
+  intent: SectionIntent;
+};
+
+type OverlapAnalysis = {
+  exactKeywordMatches: string[];
+  phraseMatches: string[];
+  toolMatches: string[];
+  weakSynonymMatches: string[];
+  specificOverlap: string[];
+  exactRequirementPhrase: boolean;
 };
 
 export function analyzeLocally(
@@ -240,47 +405,124 @@ function extractCandidateFacts(cvText: string, sections: SectionText[]) {
   let factIndex = 1;
 
   for (const section of sections) {
-    const normalizedLabel = section.label.toLowerCase();
-    const nextFacts = EXPERIENCE_SECTIONS.has(normalizedLabel)
-      ? extractExperienceFacts(section, cvText, factIndex)
-      : extractGenericFacts(section, cvText, factIndex);
-
+    const factKind = getFactKind(section.label);
+    const nextFacts = extractFactsFromSection(section, cvText, factIndex, factKind);
     facts.push(...nextFacts);
     factIndex += nextFacts.length;
   }
 
-  return dedupeByNormalizedText(facts, (fact) => fact.text).slice(0, 120);
+  return dedupeByNormalizedText(facts, (fact) => fact.text).slice(0, 160);
 }
 
-function extractExperienceFacts(
+function extractFactsFromSection(
   section: SectionText,
   cvText: string,
   startIndex: number,
+  factKind: FactKind,
 ) {
-  const lines = section.text.split("\n").map((line) => line.trim()).filter(Boolean);
+  switch (factKind) {
+    case "experience":
+    case "project":
+      return extractContextualFacts(section, cvText, startIndex, factKind);
+    case "skills":
+    case "language":
+      return extractListFacts(section, cvText, startIndex, factKind);
+    case "summary":
+      return extractSentenceFacts(section, cvText, startIndex, factKind);
+    case "header":
+      return extractHeaderFacts(section, cvText, startIndex);
+    case "education":
+    case "certification":
+      return extractGenericFacts(section, cvText, startIndex, factKind, false);
+    default:
+      return extractGenericFacts(section, cvText, startIndex, factKind, true);
+  }
+}
+
+function extractContextualFacts(
+  section: SectionText,
+  cvText: string,
+  startIndex: number,
+  factKind: FactKind,
+) {
   const facts: CandidateFact[] = [];
-  let context: string[] = [];
+  const lines = section.text.split("\n").map((line) => line.trim()).filter(Boolean);
   let factCounter = startIndex;
+  let context: string[] = [];
 
   for (const line of lines) {
     if (isBulletLine(line)) {
-      const bulletText = cleanListItem(line);
-      if (bulletText.length < 12) continue;
-      facts.push(buildFact(section.label, bulletText, cvText, factCounter, context));
+      const bullet = cleanListItem(line);
+      if (bullet.length < 12) continue;
+      facts.push(buildFact(section.label, factKind, bullet, cvText, factCounter, context));
       factCounter += 1;
       continue;
     }
 
-    if (looksLikeContextLine(line)) {
+    if (looksLikeRoleContextLine(line)) {
       context = [...context.slice(-2), line];
       continue;
     }
 
     for (const sentence of splitIntoSentences(line)) {
-      if (sentence.length < 20) continue;
-      facts.push(buildFact(section.label, sentence, cvText, factCounter, context));
+      if (sentence.length < 16) continue;
+      facts.push(buildFact(section.label, factKind, sentence, cvText, factCounter, context));
       factCounter += 1;
     }
+  }
+
+  return facts;
+}
+
+function extractListFacts(
+  section: SectionText,
+  cvText: string,
+  startIndex: number,
+  factKind: FactKind,
+) {
+  const facts: CandidateFact[] = [];
+  const lines = section.text.split("\n").map((line) => line.trim()).filter(Boolean);
+  let factCounter = startIndex;
+
+  for (const line of lines) {
+    const listItems = extractDelimitedItems(line);
+    for (const item of listItems) {
+      if (item.length < 2) continue;
+      facts.push(buildFact(section.label, factKind, item, cvText, factCounter));
+      factCounter += 1;
+    }
+  }
+
+  return facts;
+}
+
+function extractSentenceFacts(
+  section: SectionText,
+  cvText: string,
+  startIndex: number,
+  factKind: FactKind,
+) {
+  const facts: CandidateFact[] = [];
+  let factCounter = startIndex;
+
+  for (const sentence of splitIntoSentences(section.text)) {
+    if (sentence.length < 18) continue;
+    facts.push(buildFact(section.label, factKind, sentence, cvText, factCounter));
+    factCounter += 1;
+  }
+
+  return facts;
+}
+
+function extractHeaderFacts(section: SectionText, cvText: string, startIndex: number) {
+  const lines = section.text.split("\n").map((line) => line.trim()).filter(Boolean);
+  const facts: CandidateFact[] = [];
+  let factCounter = startIndex;
+
+  for (const line of lines) {
+    if (line.length < 6) continue;
+    facts.push(buildFact(section.label, "header", line, cvText, factCounter));
+    factCounter += 1;
   }
 
   return facts;
@@ -290,35 +532,25 @@ function extractGenericFacts(
   section: SectionText,
   cvText: string,
   startIndex: number,
+  factKind: FactKind,
+  splitLinesIntoSentences: boolean,
 ) {
-  const normalizedLabel = section.label.toLowerCase();
   const lines = section.text.split("\n").map((line) => line.trim()).filter(Boolean);
   const facts: CandidateFact[] = [];
   let factCounter = startIndex;
 
   for (const line of lines) {
-    if (SKILLS_SECTIONS.has(normalizedLabel)) {
-      const anchors = findAnchor(cvText, line, "cv", section.label);
-      facts.push({
-        id: `fact_${factCounter}`,
-        sourceSection: section.label,
-        text: cleanListItem(line),
-        skills: extractSkills(cleanListItem(line)),
-        tools: extractTools(cleanListItem(line)),
-        metrics: extractMetrics(cleanListItem(line)),
-        confidence: 0.62,
-        anchors,
-      });
-      factCounter += 1;
-      continue;
-    }
+    if (line.length < 4) continue;
 
-    if (line.length < 12) continue;
-    const items = isBulletLine(line) ? [cleanListItem(line)] : splitIntoSentences(line);
+    const items = splitLinesIntoSentences
+      ? isBulletLine(line)
+        ? [cleanListItem(line)]
+        : splitIntoSentences(line)
+      : [cleanListItem(line)];
 
     for (const item of items) {
-      if (item.length < 12) continue;
-      facts.push(buildFact(section.label, item, cvText, factCounter));
+      if (item.length < 8) continue;
+      facts.push(buildFact(section.label, factKind, item, cvText, factCounter));
       factCounter += 1;
     }
   }
@@ -328,6 +560,7 @@ function extractGenericFacts(
 
 function buildFact(
   sectionLabel: string,
+  factKind: FactKind,
   factText: string,
   cvText: string,
   factIndex: number,
@@ -340,7 +573,6 @@ function buildFact(
     ? directAnchors
     : findAnchor(cvText, combinedText, "cv", sectionLabel);
   const parsedContext = parseFactContext(context);
-  const normalizedLabel = sectionLabel.toLowerCase();
 
   return {
     id: `fact_${factIndex}`,
@@ -349,10 +581,10 @@ function buildFact(
     role: parsedContext.role,
     company: parsedContext.company,
     dateRange: parsedContext.dateRange,
-    skills: extractSkills(combinedText),
+    skills: extractFactKeywords(combinedText, factKind),
     tools: extractTools(combinedText),
     metrics: extractMetrics(factText),
-    confidence: getFactConfidence(normalizedLabel, factText),
+    confidence: getFactConfidence(factKind, factText),
     anchors,
   };
 }
@@ -405,60 +637,46 @@ function extractJobRequirements(
         text: requirement.text,
         sourceSection: requirement.sourceSection,
         anchors: requirement.anchors,
+        intent: "general" as const,
       })),
     );
   }
 
   return dedupeByNormalizedText(rawRequirements, (requirement) => requirement.text)
     .map((requirement, index) => buildRequirement(requirement, index + 1))
-    .slice(0, 40);
+    .slice(0, 50);
 }
 
 function extractRequirementsFromSection(section: SectionText, jobText: string) {
-  const normalizedLabel = section.label.toLowerCase();
-  const isRelevantSection = isRelevantJobSection(normalizedLabel, section.text);
+  const intent = getJobSectionIntent(section.label, section.text);
+  if (intent === "boilerplate") return [];
+
   const requirements: RawRequirement[] = [];
   const lines = section.text.split("\n").map((line) => line.trim()).filter(Boolean);
 
   for (const line of lines) {
-    if (isLikelyJobTitleLine(line) || isBoilerplate(line)) continue;
+    if (isLikelyJobTitleLine(line) || isBoilerplateText(line)) continue;
 
     if (isBulletLine(line)) {
-      const item = cleanListItem(line);
-      if (item.length > 10) {
+      for (const item of splitRequirementLineIntoItems(cleanListItem(line), intent)) {
+        if (!shouldKeepRequirementItem(item, intent, section.label)) continue;
         requirements.push({
           text: item,
           sourceSection: section.label,
           anchors: findAnchor(jobText, item, "job", section.label),
+          intent,
         });
       }
       continue;
     }
 
-    if (!isRelevantSection && !hasRequirementCue(line) && !hasToolCue(line)) {
-      continue;
-    }
-
-    if (line.length < 18) continue;
-
-    const items = splitIntoSentences(line);
-    for (const item of items.length ? items : [line]) {
-      if (!shouldKeepRequirementSentence(item, normalizedLabel)) continue;
+    for (const item of splitRequirementLineIntoItems(line, intent)) {
+      if (!shouldKeepRequirementItem(item, intent, section.label)) continue;
       requirements.push({
         text: item,
         sourceSection: section.label,
         anchors: findAnchor(jobText, item, "job", section.label),
-      });
-    }
-  }
-
-  if (!requirements.length && isRelevantSection) {
-    for (const sentence of splitIntoSentences(section.text)) {
-      if (!shouldKeepRequirementSentence(sentence, normalizedLabel)) continue;
-      requirements.push({
-        text: sentence,
-        sourceSection: section.label,
-        anchors: findAnchor(jobText, sentence, "job", section.label),
+        intent,
       });
     }
   }
@@ -468,23 +686,29 @@ function extractRequirementsFromSection(section: SectionText, jobText: string) {
 
 function extractFallbackRequirements(jobText: string) {
   return splitIntoSentences(jobText)
-    .filter((sentence) => shouldKeepRequirementSentence(sentence, "general"))
+    .flatMap((sentence) => splitRequirementLineIntoItems(sentence, "general"))
+    .filter((sentence) => shouldKeepRequirementItem(sentence, "general", "General"))
     .map((sentence) => ({
       text: sentence,
       sourceSection: "General",
       anchors: findAnchor(jobText, sentence, "job", "General"),
+      intent: "general" as const,
     }))
     .filter((requirement) => requirement.anchors.length > 0);
 }
 
 function buildRequirement(rawRequirement: RawRequirement, index: number): JobRequirement {
-  const category = classifyRequirement(rawRequirement.text, rawRequirement.sourceSection);
+  const category = classifyRequirement(
+    rawRequirement.text,
+    rawRequirement.sourceSection,
+    rawRequirement.intent,
+  );
   const importance = determineImportance(
     category,
     rawRequirement.text,
     rawRequirement.sourceSection,
   );
-  const keywords = extractKeywords(rawRequirement.text, 14);
+  const keywords = extractKeywords(rawRequirement.text, 16);
   const normalizedKeywords = uniqueStrings(expandKeywordVariants(keywords));
 
   return {
@@ -509,206 +733,512 @@ function matchRequirementsToFacts(
   const indexedFacts = facts.map(indexFact);
 
   return requirements.map((requirement) => {
+    const signal = analyzeRequirementSignal(requirement);
     const matches = indexedFacts
-      .map((fact) => buildEvidenceMatch(requirement, fact))
+      .map((fact) => buildEvidenceMatch(requirement, signal, fact))
       .filter((match): match is EvidenceMatch => Boolean(match))
       .sort(sortMatches)
       .slice(0, 3);
 
-    const mediumCount = matches.filter((match) => match.strength === "medium").length;
-    const hasStrong = matches.some((match) => match.strength === "strong");
-
-    let evidenceStatus: EvidenceStatus = "missing";
-
-    if (hasStrong || mediumCount >= 2) {
-      evidenceStatus = "supported";
-    } else if (matches.length > 0) {
-      evidenceStatus = "weak";
-    }
-
-    if (requirement.category === "hard_blocker" && matches.length === 0) {
-      evidenceStatus = "blocked";
-    }
+    const evidenceStatus = determineEvidenceStatus(requirement, signal, matches);
 
     return {
       ...requirement,
       matchedEvidence: matches,
       evidenceStatus,
-      confidenceReason: buildConfidenceReason(requirement, matches, evidenceStatus),
+      confidenceReason: buildConfidenceReason(
+        requirement,
+        signal,
+        matches,
+        evidenceStatus,
+      ),
     };
   });
 }
 
 function buildEvidenceMatch(
   requirement: JobRequirement,
+  signal: RequirementSignal,
   fact: IndexedFact,
 ): EvidenceMatch | null {
-  const requirementText = normalizeKeywordPhrase(requirement.text);
-  const exactRequirementMatch =
-    requirementText.length > 8 && fact.searchText.includes(requirementText);
-  const factKeywordSet = new Set(fact.normalizedKeywords);
-  const exactKeywordMatches = requirement.normalizedKeywords.filter((keyword) =>
-    factKeywordSet.has(keyword),
-  );
-  const phraseMatches = requirement.normalizedKeywords.filter(
-    (keyword) => keyword.includes(" ") && fact.searchText.includes(keyword),
-  );
-  const synonymMatches = requirement.normalizedKeywords.filter(
-    (keyword) =>
-      keyword === "crm" &&
-      (factKeywordSet.has("salesforce") || factKeywordSet.has("hubspot")),
-  );
-
-  const overlap = uniqueStrings([
-    ...exactKeywordMatches,
-    ...phraseMatches,
-    ...synonymMatches,
-  ]);
-  const specificOverlap = overlap.filter((keyword) => !isGenericKeyword(keyword));
-  const toolOverlap = overlap.filter((keyword) => KNOWN_TOOLS.has(keyword));
-
-  if (!overlap.length && !exactRequirementMatch) {
-    return null;
+  if (signal.hardBlockerKind) {
+    return buildHardBlockerMatch(requirement, signal, fact);
   }
 
-  const sectionBonus = fact.sectionWeight;
-  const confidenceBonus = fact.confidence * 0.08;
-  const score = clamp(
-    (exactRequirementMatch ? 0.52 : 0) +
-      Math.min(0.34, specificOverlap.length * 0.12) +
-      Math.min(0.12, toolOverlap.length * 0.08) +
-      Math.min(0.1, phraseMatches.length * 0.05) +
-      Math.min(0.08, synonymMatches.length * 0.04) +
-      sectionBonus +
-      confidenceBonus,
-    0,
-    0.99,
-  );
+  const overlap = analyzeOverlap(requirement, signal, fact);
+  const yearsMatch = signal.requiredYears
+    ? assessYearsEvidence(requirement, signal, fact, overlap)
+    : null;
+  const generalMatch = buildGeneralMatch(requirement, signal, fact, overlap);
 
-  const matchType = determineMatchType(
-    exactRequirementMatch,
-    phraseMatches.length,
-    synonymMatches.length,
-    specificOverlap.length,
-  );
-  const strength = determineMatchStrength(
+  if (yearsMatch && generalMatch) {
+    return yearsMatch.score >= generalMatch.score ? yearsMatch : generalMatch;
+  }
+
+  return yearsMatch ?? generalMatch;
+}
+
+function buildHardBlockerMatch(
+  requirement: JobRequirement,
+  signal: RequirementSignal,
+  fact: IndexedFact,
+): EvidenceMatch | null {
+  const lowerFactText = fact.searchText;
+
+  switch (signal.hardBlockerKind) {
+    case "authorization": {
+      if (fact.explicitAuthorization) {
+        const sameLocation =
+          !signal.locationTokens.length ||
+          signal.locationTokens.some((token) => lowerFactText.includes(token));
+
+        return createMatch(
+          requirement,
+          fact,
+          sameLocation ? "strong" : "medium",
+          sameLocation ? "exact" : "phrase",
+          sameLocation ? 0.94 : 0.68,
+          sameLocation
+            ? `Strong match because the CV explicitly states work authorization${signal.locationPhrase ? ` and references ${signal.locationPhrase}` : ""}.`
+            : "Medium match because the CV explicitly states work authorization, but the location scope is not completely clear.",
+        );
+      }
+
+      if (fact.factKind === "header" && signal.locationTokens.some((token) => fact.locationTokens.includes(token))) {
+        return createMatch(
+          requirement,
+          fact,
+          "weak",
+          "inferred",
+          0.26,
+          `Weak match because the CV shows location details${signal.locationPhrase ? ` in ${signal.locationPhrase}` : ""}, but location does not prove work authorization.`,
+        );
+      }
+
+      return null;
+    }
+
+    case "language": {
+      const requiredLanguage = signal.explicitLanguageTerms[0];
+      const hasLanguage = requiredLanguage
+        ? fact.explicitLanguages.includes(requiredLanguage)
+        : fact.explicitLanguages.length > 0;
+
+      if (!hasLanguage) return null;
+
+      const strongLanguage =
+        fact.factKind === "language" || LANGUAGE_PROFICIENCY_PATTERNS.some((pattern) => pattern.test(fact.text));
+
+      return createMatch(
+        requirement,
+        fact,
+        strongLanguage ? "strong" : "medium",
+        "exact",
+        strongLanguage ? 0.92 : 0.64,
+        strongLanguage
+          ? `Strong match because the CV explicitly states ${requiredLanguage ?? "the required language"} in a language-related fact.`
+          : `Medium match because the CV mentions ${requiredLanguage ?? "the language"}, but the proficiency level is limited or unclear.`,
+      );
+    }
+
+    case "degree": {
+      const exactDegree = signal.explicitDegreeTerms.filter((degree) =>
+        fact.explicitDegreeTerms.includes(degree),
+      );
+
+      if (exactDegree.length) {
+        return createMatch(
+          requirement,
+          fact,
+          "strong",
+          "exact",
+          0.91,
+          `Strong match because the CV explicitly lists ${exactDegree[0]} in an education fact.`,
+        );
+      }
+
+      if (fact.explicitDegreeTerms.length) {
+        return createMatch(
+          requirement,
+          fact,
+          "weak",
+          "phrase",
+          0.34,
+          `Weak match because the CV lists education credentials, but it does not clearly prove ${signal.explicitDegreeTerms.join(" / ")}.`,
+        );
+      }
+
+      return null;
+    }
+
+    case "certification": {
+      const exactCertification = signal.explicitCertificationTerms.filter((term) =>
+        fact.explicitCertificationTerms.includes(term),
+      );
+
+      if (exactCertification.length) {
+        return createMatch(
+          requirement,
+          fact,
+          "strong",
+          "exact",
+          0.9,
+          `Strong match because the CV explicitly mentions ${exactCertification[0]} as a certification.`,
+        );
+      }
+
+      if (fact.explicitCertificationTerms.length || /\bcertif/i.test(fact.text)) {
+        return createMatch(
+          requirement,
+          fact,
+          "weak",
+          "phrase",
+          0.32,
+          "Weak match because the CV mentions certifications, but the required certification is not explicit.",
+        );
+      }
+
+      return null;
+    }
+
+    case "clearance": {
+      if (fact.explicitClearance) {
+        return createMatch(
+          requirement,
+          fact,
+          "strong",
+          "exact",
+          0.92,
+          "Strong match because the CV explicitly mentions security clearance.",
+        );
+      }
+      return null;
+    }
+
+    case "driving_license": {
+      if (fact.explicitDrivingLicense) {
+        return createMatch(
+          requirement,
+          fact,
+          "strong",
+          "exact",
+          0.89,
+          "Strong match because the CV explicitly mentions a driving license.",
+        );
+      }
+      return null;
+    }
+
+    case "travel": {
+      if (fact.explicitTravel) {
+        return createMatch(
+          requirement,
+          fact,
+          "medium",
+          "phrase",
+          0.62,
+          "Medium match because the CV explicitly mentions travel-related availability or travel-heavy work.",
+        );
+      }
+      return null;
+    }
+
+    case "shift": {
+      if (fact.explicitShiftAvailability) {
+        return createMatch(
+          requirement,
+          fact,
+          "medium",
+          "phrase",
+          0.62,
+          "Medium match because the CV explicitly mentions timezone or shift availability.",
+        );
+      }
+      return null;
+    }
+
+    case "location": {
+      const exactLocationMatch =
+        signal.locationTokens.length > 0 &&
+        signal.locationTokens.every((token) => fact.locationTokens.includes(token));
+
+      if (exactLocationMatch) {
+        return createMatch(
+          requirement,
+          fact,
+          "strong",
+          "exact",
+          0.86,
+          `Strong match because the CV explicitly lists ${signal.locationPhrase ?? "the required location"}.`,
+        );
+      }
+
+      if (signal.locationTokens.some((token) => fact.locationTokens.includes(token))) {
+        return createMatch(
+          requirement,
+          fact,
+          "weak",
+          "phrase",
+          0.32,
+          `Weak match because the CV references part of the required location${signal.locationPhrase ? ` (${signal.locationPhrase})` : ""}, but the match is incomplete.`,
+        );
+      }
+
+      return null;
+    }
+
+    default: {
+      const overlap = analyzeOverlap(requirement, signal, fact);
+      if (!overlap.specificOverlap.length) return null;
+      return createMatch(
+        requirement,
+        fact,
+        "weak",
+        overlap.weakSynonymMatches.length ? "synonym" : "phrase",
+        0.28,
+        `Weak match because the CV contains related terms for this hard blocker, but the requirement is not explicitly proven.`,
+      );
+    }
+  }
+}
+
+function assessYearsEvidence(
+  requirement: JobRequirement,
+  signal: RequirementSignal,
+  fact: IndexedFact,
+  overlap: OverlapAnalysis,
+) {
+  if (!signal.requiredYears) return null;
+
+  const related =
+    overlap.specificOverlap.length >= 1 ||
+    overlap.toolMatches.length >= 1 ||
+    overlap.phraseMatches.length >= 1 ||
+    fact.role?.toLowerCase().includes(overlap.specificOverlap[0] ?? "");
+
+  if (!related) return null;
+
+  const explicitYears = fact.explicitYears;
+  const derivedYears = fact.derivedYears;
+  const bestYears = explicitYears ?? derivedYears;
+
+  if (!bestYears) {
+    return createMatch(
+      requirement,
+      fact,
+      fact.factKind === "experience" || fact.factKind === "project" ? "weak" : "weak",
+      "inferred",
+      0.3,
+      `Weak match because the CV has related ${fact.factKind} evidence, but it does not clearly prove ${signal.requiredYears}+ years.`,
+    );
+  }
+
+  const factContextStrong = fact.factKind === "experience" || fact.factKind === "project";
+  const domainMatchStrong = overlap.phraseMatches.length > 0 || overlap.specificOverlap.length >= 2;
+
+  if (bestYears >= signal.requiredYears && factContextStrong && domainMatchStrong) {
+    return createMatch(
+      requirement,
+      fact,
+      "strong",
+      explicitYears ? "exact" : "inferred",
+      0.91,
+      `Strong match because the CV shows ${formatYears(bestYears)} of related experience and the fact aligns with ${summarizeRequirementDomain(requirement)}.`,
+    );
+  }
+
+  if (bestYears >= signal.requiredYears && factContextStrong) {
+    return createMatch(
+      requirement,
+      fact,
+      "medium",
+      explicitYears ? "exact" : "inferred",
+      0.67,
+      `Medium match because the CV appears to show ${formatYears(bestYears)} of related experience, but the domain wording is only partially aligned.`,
+    );
+  }
+
+  if (bestYears < signal.requiredYears) {
+    return createMatch(
+      requirement,
+      fact,
+      "weak",
+      explicitYears ? "exact" : "inferred",
+      0.36,
+      `Weak match because the CV shows only ${formatYears(bestYears)} against a ${signal.requiredYears}+ year requirement.`,
+    );
+  }
+
+  return createMatch(
     requirement,
     fact,
-    score,
-    exactRequirementMatch,
-    specificOverlap.length,
-    toolOverlap.length,
-    phraseMatches.length,
+    "weak",
+    "inferred",
+    0.34,
+    `Weak match because the dates suggest related experience, but the evidence is not specific enough to prove ${signal.requiredYears}+ years.`,
   );
+}
 
-  if (!strength) {
+function buildGeneralMatch(
+  requirement: JobRequirement,
+  signal: RequirementSignal,
+  fact: IndexedFact,
+  overlap: OverlapAnalysis,
+) {
+  if (
+    !overlap.specificOverlap.length &&
+    !overlap.toolMatches.length &&
+    !overlap.weakSynonymMatches.length
+  ) {
     return null;
   }
 
-  return {
-    id: `${requirement.id}_${fact.id}`,
-    requirementId: requirement.id,
-    factId: fact.id,
-    matchedText: fact.text,
-    matchType,
+  const isExperienceContext =
+    fact.factKind === "experience" || fact.factKind === "project";
+  const isSkillsContext = fact.factKind === "skills";
+  const isSummaryContext = fact.factKind === "summary";
+  const isEducationLike =
+    fact.factKind === "education" ||
+    fact.factKind === "certification" ||
+    fact.factKind === "language";
+  const overlapCount = overlap.specificOverlap.length;
+  const hasOnlyWeakSynonyms =
+    !overlapCount && !overlap.toolMatches.length && overlap.weakSynonymMatches.length > 0;
+
+  let strength: EvidenceStrength | null = null;
+
+  if (requirement.category === "responsibility") {
+    if (isExperienceContext && overlap.phraseMatches.length > 0 && overlapCount >= 2) {
+      strength = "strong";
+    } else if (isExperienceContext && (overlapCount >= 2 || overlap.phraseMatches.length > 0)) {
+      strength = "medium";
+    } else if (isSkillsContext || isSummaryContext) {
+      strength = overlapCount || overlap.weakSynonymMatches.length ? "weak" : null;
+    }
+  } else if (requirement.category === "tool") {
+    if (isExperienceContext && overlap.toolMatches.length > 0) {
+      strength =
+        overlap.phraseMatches.length > 0 || overlapCount >= 2 ? "strong" : "medium";
+    } else if (isSkillsContext && overlap.toolMatches.length > 0) {
+      strength = "medium";
+    } else if (isSummaryContext && overlap.toolMatches.length > 0) {
+      strength = "weak";
+    }
+  } else if (requirement.category === "soft_skill") {
+    if (isExperienceContext && (overlap.phraseMatches.length > 0 || overlapCount >= 2)) {
+      strength = "medium";
+    } else if (isSkillsContext || isSummaryContext) {
+      strength = overlapCount ? "weak" : null;
+    }
+  } else if (requirement.category === "domain" || requirement.category === "must_have") {
+    if (isExperienceContext && overlap.phraseMatches.length > 0 && overlapCount >= 2) {
+      strength = "strong";
+    } else if (isExperienceContext && (overlapCount >= 2 || overlap.toolMatches.length > 0)) {
+      strength = "medium";
+    } else if (isSkillsContext && (overlapCount >= 1 || overlap.toolMatches.length > 0)) {
+      strength = "medium";
+    } else if (isSummaryContext && overlapCount >= 1) {
+      strength = "weak";
+    } else if (isEducationLike && overlapCount >= 1) {
+      strength = "weak";
+    }
+  } else if (requirement.category === "nice_to_have") {
+    if (isExperienceContext && (overlap.phraseMatches.length > 0 || overlapCount >= 2)) {
+      strength = "medium";
+    } else if (overlapCount >= 1 || overlap.toolMatches.length > 0 || overlap.weakSynonymMatches.length > 0) {
+      strength = "weak";
+    }
+  }
+
+  if (!strength && hasOnlyWeakSynonyms) {
+    strength = "weak";
+  }
+
+  if (!strength) return null;
+
+  if (isSummaryContext && strength !== "weak") {
+    strength = "weak";
+  }
+
+  if (
+    isSkillsContext &&
+    requirement.category === "responsibility" &&
+    strength !== "weak"
+  ) {
+    strength = "weak";
+  }
+
+  const matchType = determineMatchType(overlap);
+  const score = computeMatchScore(strength, overlap, fact, hasOnlyWeakSynonyms);
+
+  return createMatch(
+    requirement,
+    fact,
     strength,
-    score: Number(score.toFixed(2)),
-    explanation: buildMatchExplanation(fact, overlap, strength),
-    anchors: fact.anchors,
-  };
+    matchType,
+    score,
+    buildGeneralMatchExplanation(requirement, fact, overlap, strength),
+  );
 }
 
-function determineMatchType(
-  exactRequirementMatch: boolean,
-  phraseMatchCount: number,
-  synonymMatchCount: number,
-  overlapCount: number,
-): MatchType {
-  if (exactRequirementMatch) return "exact";
-  if (phraseMatchCount > 0) return "phrase";
-  if (synonymMatchCount > 0) return "synonym";
-  if (overlapCount > 0) return "inferred";
-  return "semantic";
-}
-
-function determineMatchStrength(
+function determineEvidenceStatus(
   requirement: JobRequirement,
-  fact: IndexedFact,
-  score: number,
-  exactRequirementMatch: boolean,
-  specificOverlapCount: number,
-  toolOverlapCount: number,
-  phraseMatchCount: number,
-): EvidenceStrength | null {
-  if (
-    exactRequirementMatch ||
-    specificOverlapCount >= 3 ||
-    (toolOverlapCount >= 1 && specificOverlapCount >= 2) ||
-    (requirement.category === "hard_blocker" &&
-      specificOverlapCount >= 2 &&
-      !isWeakEvidenceSection(fact.sourceSection))
-  ) {
-    return downgradeStrengthIfNeeded(requirement, fact, "strong", toolOverlapCount);
+  signal: RequirementSignal,
+  matches: EvidenceMatch[],
+): EvidenceStatus {
+  const mediumCount = matches.filter((match) => match.strength === "medium").length;
+  const strongCount = matches.filter((match) => match.strength === "strong").length;
+
+  if (signal.hardBlockerKind) {
+    return strongCount > 0 ? "supported" : "blocked";
   }
 
-  if (
-    specificOverlapCount >= 2 ||
-    toolOverlapCount >= 1 ||
-    phraseMatchCount >= 1 ||
-    score >= 0.56
-  ) {
-    return downgradeStrengthIfNeeded(requirement, fact, "medium", toolOverlapCount);
+  if (strongCount > 0 || mediumCount >= 2) {
+    return "supported";
   }
 
-  if (specificOverlapCount >= 1 || score >= 0.28) {
-    return downgradeStrengthIfNeeded(requirement, fact, "weak", toolOverlapCount);
-  }
-
-  return null;
-}
-
-function downgradeStrengthIfNeeded(
-  requirement: JobRequirement,
-  fact: IndexedFact,
-  strength: EvidenceStrength,
-  toolOverlapCount: number,
-): EvidenceStrength {
-  if (
-    isWeakEvidenceSection(fact.sourceSection) &&
-    strength === "strong" &&
-    requirement.category !== "hard_blocker" &&
-    toolOverlapCount === 0
-  ) {
+  if (matches.length > 0) {
     return "weak";
   }
 
-  if (SKILLS_SECTIONS.has(fact.sourceSection.toLowerCase()) && strength === "strong") {
-    return toolOverlapCount > 0 ? "medium" : "weak";
-  }
-
-  return strength;
+  return "missing";
 }
 
 function buildConfidenceReason(
   requirement: JobRequirement,
+  signal: RequirementSignal,
   matches: EvidenceMatch[],
   evidenceStatus: EvidenceStatus,
 ) {
-  if (!matches.length && evidenceStatus === "blocked") {
-    return "This hard blocker has no grounded supporting evidence in the CV.";
+  const bestMatch = matches[0];
+
+  if (evidenceStatus === "supported" && bestMatch) {
+    return `${capitalize(bestMatch.strength)} evidence from the ${bestMatch.anchors[0]?.section ?? "CV"} section supports this requirement. ${bestMatch.explanation}`;
   }
 
-  if (!matches.length) {
-    return "No grounded CV fact was strong enough to support this requirement.";
+  if (signal.hardBlockerKind) {
+    if (bestMatch) {
+      return `Blocked because the job requires explicit ${describeHardBlocker(signal.hardBlockerKind, requirement.text)}, and the current CV evidence is only partial. ${bestMatch.explanation}`;
+    }
+
+    return `Blocked because the job requires explicit ${describeHardBlocker(signal.hardBlockerKind, requirement.text)} and the CV does not clearly state it.`;
   }
 
-  const strongest = matches[0];
+  if (signal.requiredYears) {
+    if (bestMatch) {
+      return `Weak because the CV has related evidence, but it does not clearly prove ${signal.requiredYears}+ years for ${summarizeRequirementDomain(requirement)}.`;
+    }
 
-  if (evidenceStatus === "supported") {
-    return `Supported by ${strongest.strength} evidence from the ${matches[0].anchors[0]?.section ?? "CV"} section.`;
+    return `Missing because no CV fact clearly proves ${signal.requiredYears}+ years for ${summarizeRequirementDomain(requirement)}.`;
   }
 
-  return `Only ${strongest.strength} evidence was found, so this requirement still needs review.`;
+  if (bestMatch) {
+    return bestMatch.strength === "weak"
+      ? `Weak because the current evidence is partial or generic. ${bestMatch.explanation}`
+      : `Needs review because the evidence is not yet strong enough. ${bestMatch.explanation}`;
+  }
+
+  return `Missing because no CV fact explicitly supports "${requirement.text}".`;
 }
 
 function runAtsHygieneChecks(
@@ -750,7 +1280,11 @@ function runAtsHygieneChecks(
     );
   }
 
-  if (!sectionLabels.has("experience") && !sectionLabels.has("employment") && !sectionLabels.has("work history")) {
+  if (
+    !sectionLabels.has("experience") &&
+    !sectionLabels.has("employment") &&
+    !sectionLabels.has("work history")
+  ) {
     warnings.push(
       buildAtsWarning(
         "ats_experience_section",
@@ -798,7 +1332,11 @@ function runAtsHygieneChecks(
     );
   }
 
-  if ((cvText.match(/\|/g) ?? []).length >= 4 || /\t/.test(cvText) || /-{4,}|_{4,}/.test(cvText)) {
+  if (
+    (cvText.match(/\|/g) ?? []).length >= 4 ||
+    /\t/.test(cvText) ||
+    /-{4,}|_{4,}/.test(cvText)
+  ) {
     warnings.push(
       buildAtsWarning(
         "ats_layout_markers",
@@ -858,7 +1396,11 @@ function runAtsHygieneChecks(
     );
   }
 
-  if (/(font-size\s*:\s*0|display\s*:\s*none|opacity\s*:\s*0|color\s*:\s*#?fff\b|white text|hidden text|invisible text)/i.test(lowerCv)) {
+  if (
+    /(font-size\s*:\s*0|display\s*:\s*none|opacity\s*:\s*0|color\s*:\s*#?fff\b|white text|hidden text|invisible text)/i.test(
+      lowerCv,
+    )
+  ) {
     warnings.push(
       buildAtsWarning(
         "ats_hidden_text",
@@ -877,81 +1419,91 @@ function computeScoring(
   requirements: JobRequirement[],
   warnings: ATSHygieneWarning[],
 ) {
-  const totalImportance =
+  const totalRequirementWeight =
     requirements.reduce((sum, requirement) => sum + requirement.importance, 0) || 1;
-
-  const supportedWeight = requirements
-    .filter((requirement) => requirement.evidenceStatus === "supported")
-    .reduce((sum, requirement) => sum + requirement.importance, 0);
-  const weakWeight = requirements
-    .filter((requirement) => requirement.evidenceStatus === "weak")
-    .reduce((sum, requirement) => sum + requirement.importance, 0);
-  const missingWeight = requirements
-    .filter((requirement) => requirement.evidenceStatus === "missing")
-    .reduce((sum, requirement) => sum + requirement.importance, 0);
-  const blockedWeight = requirements
-    .filter((requirement) => requirement.evidenceStatus === "blocked")
-    .reduce((sum, requirement) => sum + requirement.importance, 0);
+  const supportedWeight = sumImportance(requirements, "supported");
+  const weakWeight = sumImportance(requirements, "weak");
+  const missingWeight = sumImportance(requirements, "missing");
+  const blockedWeight = sumImportance(requirements, "blocked");
 
   const atsPenalty = warnings.reduce((sum, warning) => {
-    if (warning.severity === "critical") return sum + 18;
+    if (warning.severity === "critical") return sum + 20;
     if (warning.severity === "warning") return sum + 8;
     return sum + 3;
   }, 0);
 
   const atsParseScore = clamp(100 - atsPenalty, 0, 100);
-
-  const jobMatchScore = Math.round(
-    (requirements.reduce((sum, requirement) => {
-      const factor =
-        requirement.evidenceStatus === "supported"
-          ? 1
-          : requirement.evidenceStatus === "weak"
-            ? 0.45
-            : 0;
-      return sum + requirement.importance * factor;
-    }, 0) /
-      totalImportance) *
-      100,
+  const blockedHardBlockerPenalty = Math.round(
+    (blockedWeight / totalRequirementWeight) * 35,
   );
 
-  const evidenceConfidenceScore = Math.round(
-    (requirements.reduce((sum, requirement) => {
-      const bestScore = requirement.matchedEvidence[0]?.score ?? 0;
-      const factor =
-        requirement.evidenceStatus === "supported"
-          ? 0.7 + bestScore * 0.3
-          : requirement.evidenceStatus === "weak"
-            ? 0.25 + bestScore * 0.35
-            : requirement.evidenceStatus === "missing"
-              ? 0.05
-              : 0;
-      return sum + requirement.importance * factor;
-    }, 0) /
-      totalImportance) *
-      100,
+  const weightedCoveragePoints = requirements.reduce((sum, requirement) => {
+    const factor =
+      requirement.evidenceStatus === "supported"
+        ? 1
+        : requirement.evidenceStatus === "weak"
+          ? 0.4
+          : requirement.evidenceStatus === "missing"
+            ? 0
+            : -0.45;
+    return sum + requirement.importance * factor;
+  }, 0);
+
+  const weightedEvidencePoints = requirements.reduce((sum, requirement) => {
+    const bestScore = requirement.matchedEvidence[0]?.score ?? 0;
+    const factor =
+      requirement.evidenceStatus === "supported"
+        ? 0.72 + bestScore * 0.28
+        : requirement.evidenceStatus === "weak"
+          ? 0.2 + bestScore * 0.25
+          : requirement.evidenceStatus === "missing"
+            ? 0.02
+            : -0.4;
+    return sum + requirement.importance * factor;
+  }, 0);
+
+  const jobMatchScore = clamp(
+    Math.round((weightedCoveragePoints / totalRequirementWeight) * 100),
+    0,
+    100,
   );
 
-  const overallReadinessScore = Math.round(
-    atsParseScore * 0.25 + jobMatchScore * 0.45 + evidenceConfidenceScore * 0.3,
+  const evidenceConfidenceScore = clamp(
+    Math.round((weightedEvidencePoints / totalRequirementWeight) * 100),
+    0,
+    100,
+  );
+
+  const overallReadinessScore = clamp(
+    Math.round(
+      atsParseScore * 0.2 +
+        jobMatchScore * 0.45 +
+        evidenceConfidenceScore * 0.35 -
+        blockedHardBlockerPenalty,
+    ),
+    0,
+    100,
   );
 
   return {
     atsParseScore,
     jobMatchScore,
     evidenceConfidenceScore,
-    overallReadinessScore: clamp(overallReadinessScore, 0, 100),
+    overallReadinessScore,
     breakdown: {
+      totalRequirementWeight,
       supportedWeight,
       weakWeight,
       missingWeight,
       blockedWeight,
+      blockedHardBlockerPenalty,
       atsPenalty,
     },
   };
 }
 
 function indexFact(fact: CandidateFact): IndexedFact {
+  const factKind = getFactKind(fact.sourceSection);
   const combinedText = [
     fact.text,
     fact.role,
@@ -963,13 +1515,188 @@ function indexFact(fact: CandidateFact): IndexedFact {
   ]
     .filter(Boolean)
     .join(" ");
+  const normalizedKeywords = uniqueStrings(
+    expandKeywordVariants(extractKeywords(combinedText, 18)),
+  );
 
   return {
     ...fact,
+    factKind,
     searchText: normalizeText(combinedText).toLowerCase(),
-    normalizedKeywords: uniqueStrings(expandKeywordVariants(extractKeywords(combinedText, 16))),
-    sectionWeight: getSectionWeight(fact.sourceSection),
+    normalizedKeywords,
+    weakKeywordVariants: uniqueStrings(
+      normalizedKeywords.flatMap((keyword) => getWeakSynonyms(keyword)),
+    ),
+    sectionWeight: getSectionWeight(factKind),
+    explicitLanguages: detectExplicitLanguages(fact.text, factKind),
+    explicitDegreeTerms: detectExplicitDegreeTerms(fact.text),
+    explicitCertificationTerms: detectExplicitCertificationTerms(fact.text),
+    explicitAuthorization: AUTHORIZATION_PATTERNS.some((pattern) => pattern.test(fact.text)),
+    explicitClearance: CLEARANCE_PATTERNS.some((pattern) => pattern.test(fact.text)),
+    explicitDrivingLicense: DRIVING_LICENSE_PATTERNS.some((pattern) => pattern.test(fact.text)),
+    explicitTravel: TRAVEL_PATTERNS.some((pattern) => pattern.test(fact.text)),
+    explicitShiftAvailability: SHIFT_PATTERNS.some((pattern) => pattern.test(fact.text)),
+    locationTokens: extractLocationTokens(fact.text),
+    derivedYears: deriveYearsFromDateRange(fact.dateRange),
+    explicitYears: extractExplicitYears(fact.text),
   };
+}
+
+function analyzeRequirementSignal(requirement: JobRequirement): RequirementSignal {
+  const hardBlockerKind = detectHardBlockerKind(requirement.text);
+  const years = extractRequiredYears(requirement.text);
+
+  return {
+    hardBlockerKind,
+    locationPhrase: hardBlockerKind === "location" ? extractLocationPhrase(requirement.text) : undefined,
+    locationTokens: hardBlockerKind === "location" ? extractLocationTokens(requirement.text) : [],
+    explicitLanguageTerms: detectExplicitLanguages(requirement.text, "language"),
+    explicitDegreeTerms: detectExplicitDegreeTerms(requirement.text),
+    explicitCertificationTerms: detectExplicitCertificationTerms(requirement.text),
+    requiredYears: years,
+    specificKeywords: requirement.normalizedKeywords.filter(
+      (keyword) => !isGenericKeyword(keyword),
+    ),
+    toolKeywords: requirement.normalizedKeywords.filter((keyword) => KNOWN_TOOLS.has(keyword)),
+  };
+}
+
+function analyzeOverlap(
+  requirement: JobRequirement,
+  signal: RequirementSignal,
+  fact: IndexedFact,
+): OverlapAnalysis {
+  const factKeywordSet = new Set(fact.normalizedKeywords);
+  const exactKeywordMatches = signal.specificKeywords.filter((keyword) =>
+    factKeywordSet.has(keyword),
+  );
+  const phraseMatches = signal.specificKeywords.filter(
+    (keyword) => keyword.includes(" ") && fact.searchText.includes(keyword),
+  );
+  const toolMatches = signal.toolKeywords.filter(
+    (keyword) => factKeywordSet.has(keyword) || fact.searchText.includes(keyword),
+  );
+  const weakSynonymMatches = uniqueStrings(
+    signal.specificKeywords.flatMap((keyword) => {
+      const direct = getWeakSynonyms(keyword).filter(
+        (target) => factKeywordSet.has(target) || fact.searchText.includes(target),
+      );
+      const reverse = fact.normalizedKeywords
+        .filter((factKeyword) => getWeakSynonyms(factKeyword).includes(keyword))
+        .map(() => keyword);
+      return [...direct.map(() => keyword), ...reverse];
+    }),
+  );
+  const specificOverlap = uniqueStrings([
+    ...exactKeywordMatches,
+    ...phraseMatches,
+    ...toolMatches,
+  ]).filter((keyword) => !isGenericKeyword(keyword));
+  const exactRequirementPhrase = requirement.keywords.some((keyword) => {
+    const normalized = normalizeKeywordPhrase(keyword);
+    return normalized.includes(" ") && fact.searchText.includes(normalized);
+  });
+
+  return {
+    exactKeywordMatches,
+    phraseMatches,
+    toolMatches,
+    weakSynonymMatches,
+    specificOverlap,
+    exactRequirementPhrase,
+  };
+}
+
+function createMatch(
+  requirement: JobRequirement,
+  fact: IndexedFact,
+  strength: EvidenceStrength,
+  matchType: MatchType,
+  score: number,
+  explanation: string,
+): EvidenceMatch {
+  return {
+    id: `${requirement.id}_${fact.id}`,
+    requirementId: requirement.id,
+    factId: fact.id,
+    matchedText: fact.text,
+    matchType,
+    strength,
+    score: Number(clamp(score, 0, 0.99).toFixed(2)),
+    explanation,
+    anchors: fact.anchors,
+  };
+}
+
+function determineMatchType(overlap: OverlapAnalysis): MatchType {
+  if (overlap.exactRequirementPhrase) return "exact";
+  if (overlap.phraseMatches.length > 0) return "phrase";
+  if (overlap.weakSynonymMatches.length > 0) return "synonym";
+  if (overlap.specificOverlap.length > 0 || overlap.toolMatches.length > 0) {
+    return "inferred";
+  }
+  return "semantic";
+}
+
+function computeMatchScore(
+  strength: EvidenceStrength,
+  overlap: OverlapAnalysis,
+  fact: IndexedFact,
+  hasOnlyWeakSynonyms: boolean,
+) {
+  const base =
+    strength === "strong" ? 0.82 : strength === "medium" ? 0.58 : 0.34;
+  const overlapBonus = Math.min(0.1, overlap.specificOverlap.length * 0.03);
+  const phraseBonus = overlap.phraseMatches.length ? 0.05 : 0;
+  const toolBonus = overlap.toolMatches.length ? 0.04 : 0;
+  const weakPenalty = hasOnlyWeakSynonyms ? 0.08 : 0;
+  const summaryPenalty = fact.factKind === "summary" ? 0.1 : 0;
+  const skillsPenalty = fact.factKind === "skills" ? 0.05 : 0;
+
+  return clamp(
+    base + overlapBonus + phraseBonus + toolBonus + fact.sectionWeight - weakPenalty - summaryPenalty - skillsPenalty,
+    0,
+    0.99,
+  );
+}
+
+function buildGeneralMatchExplanation(
+  requirement: JobRequirement,
+  fact: IndexedFact,
+  overlap: OverlapAnalysis,
+  strength: EvidenceStrength,
+) {
+  const matchedTerms = [
+    ...overlap.toolMatches,
+    ...overlap.phraseMatches,
+    ...overlap.exactKeywordMatches,
+    ...overlap.weakSynonymMatches,
+  ];
+  const preview = uniqueStrings(matchedTerms).slice(0, 3).join(", ");
+
+  if (overlap.weakSynonymMatches.length && !overlap.specificOverlap.length) {
+    return `Weak match because the CV only shows related terms such as ${preview}, not the exact requirement wording.`;
+  }
+
+  if (fact.factKind === "skills") {
+    return requirement.category === "tool"
+      ? `Medium match because ${preview || "the tool"} appears in the Skills section, but there is limited experience-context evidence.`
+      : `Weak match because the CV mentions ${preview || "related terms"} in Skills only, without enough experience-context evidence.`;
+  }
+
+  if (fact.factKind === "summary") {
+    return `Weak match because the CV summary mentions ${preview || "related terms"}, but summary-only wording is not enough for strong proof.`;
+  }
+
+  if (strength === "strong") {
+    return `Strong match because the CV explicitly mentions ${preview || "the required terms"} in a ${capitalize(fact.factKind)} fact.`;
+  }
+
+  if (strength === "medium") {
+    return `Medium match because the CV shows ${preview || "related terms"} in a ${capitalize(fact.factKind)} fact, but the context is narrower than the job requirement.`;
+  }
+
+  return `Weak match because the CV only partially overlaps with ${preview || "the requirement wording"}.`;
 }
 
 function sortMatches(a: EvidenceMatch, b: EvidenceMatch) {
@@ -984,34 +1711,77 @@ function strengthRank(value: EvidenceStrength) {
   return value === "strong" ? 3 : value === "medium" ? 2 : 1;
 }
 
-function classifyRequirement(text: string, sourceSection?: string): RequirementCategory {
-  const lowerText = text.toLowerCase();
-  const section = (sourceSection ?? "").toLowerCase();
+function getFactKind(sectionLabel: string): FactKind {
+  const normalized = sectionLabel.toLowerCase();
+  if (EXPERIENCE_SECTIONS.has(normalized)) return "experience";
+  if (PROJECT_SECTIONS.has(normalized)) return "project";
+  if (SKILLS_SECTIONS.has(normalized)) return "skills";
+  if (EDUCATION_SECTIONS.has(normalized)) return "education";
+  if (CERTIFICATION_SECTIONS.has(normalized)) return "certification";
+  if (LANGUAGE_SECTIONS.has(normalized)) return "language";
+  if (SUMMARY_SECTIONS.has(normalized)) return "summary";
+  if (HEADER_SECTIONS.has(normalized)) return "header";
+  return "other";
+}
 
-  if (HARD_BLOCKER_PATTERNS.some((pattern) => pattern.test(lowerText))) {
-    return "hard_blocker";
-  }
-
-  if (NICE_TO_HAVE_PATTERNS.some((pattern) => pattern.test(lowerText)) || section.includes("preferred")) {
-    return "nice_to_have";
-  }
+function getJobSectionIntent(label: string, text: string): SectionIntent {
+  const normalizedLabel = label.toLowerCase();
 
   if (
-    MUST_HAVE_PATTERNS.some((pattern) => pattern.test(lowerText)) ||
-    section.includes("required") ||
-    section.includes("minimum")
+    BOILERPLATE_SECTION_PATTERNS.some((pattern) => pattern.test(normalizedLabel)) ||
+    BOILERPLATE_TEXT_PATTERNS.some((pattern) => pattern.test(text))
   ) {
-    return detectToolOrSoftSkillCategory(lowerText) ?? "must_have";
+    return "boilerplate";
   }
 
-  if (section.includes("responsibilit") || section.includes("dut") || RESPONSIBILITY_PATTERNS.some((pattern) => pattern.test(lowerText))) {
+  if (RESPONSIBILITY_SECTION_PATTERNS.some((pattern) => pattern.test(normalizedLabel))) {
     return "responsibility";
   }
 
-  const specializedCategory = detectToolOrSoftSkillCategory(lowerText);
-  if (specializedCategory) return specializedCategory;
+  if (PREFERRED_SECTION_PATTERNS.some((pattern) => pattern.test(normalizedLabel))) {
+    return "preferred";
+  }
 
-  if (section.includes("skills") || section.includes("qualifications")) {
+  if (REQUIREMENT_SECTION_PATTERNS.some((pattern) => pattern.test(normalizedLabel))) {
+    return normalizedLabel.includes("about you") || normalizedLabel.includes("you have")
+      ? "about_you"
+      : "must_have";
+  }
+
+  return "general";
+}
+
+function classifyRequirement(
+  text: string,
+  sourceSection?: string,
+  intent: SectionIntent = "general",
+): RequirementCategory {
+  const lowerText = text.toLowerCase();
+  const section = (sourceSection ?? "").toLowerCase();
+
+  if (detectHardBlockerKind(text)) {
+    return "hard_blocker";
+  }
+
+  if (intent === "preferred" || NICE_TO_HAVE_PATTERNS.some((pattern) => pattern.test(lowerText))) {
+    return "nice_to_have";
+  }
+
+  if (intent === "responsibility" || RESPONSIBILITY_PATTERNS.some((pattern) => pattern.test(lowerText))) {
+    return "responsibility";
+  }
+
+  const specializedCategory = detectToolDomainOrSoftSkill(lowerText);
+  if (specializedCategory) {
+    return specializedCategory;
+  }
+
+  if (
+    intent === "must_have" ||
+    intent === "about_you" ||
+    MUST_HAVE_PATTERNS.some((pattern) => pattern.test(lowerText)) ||
+    section.includes("qualif")
+  ) {
     return "must_have";
   }
 
@@ -1047,7 +1817,7 @@ function determineImportance(
   }
 }
 
-function detectToolOrSoftSkillCategory(text: string) {
+function detectToolDomainOrSoftSkill(text: string): RequirementCategory | null {
   const hasTool = [...KNOWN_TOOLS].some((tool) => text.includes(tool));
   if (hasTool) return "tool";
 
@@ -1062,8 +1832,47 @@ function detectToolOrSoftSkillCategory(text: string) {
   return null;
 }
 
+function detectHardBlockerKind(text: string): HardBlockerKind | undefined {
+  const lower = text.toLowerCase();
+
+  if (/(work authorization|authorized to work|right to work|eligible to work|visa|sponsorship)/i.test(lower)) {
+    return "authorization";
+  }
+  if (/(security clearance|clearance)/i.test(lower)) {
+    return "clearance";
+  }
+  if (/(driver'?s license|driving license)/i.test(lower)) {
+    return "driving_license";
+  }
+  if (/(travel|willingness to travel)/i.test(lower)) {
+    return "travel";
+  }
+  if (/(time zone|timezone|shift|weekend|night shift|cest|cet|est|pst)/i.test(lower)) {
+    return "shift";
+  }
+  if (/(based in|located in|must reside|on-site|onsite|hybrid|in-office|relocate)/i.test(lower)) {
+    return "location";
+  }
+  if (
+    [...KNOWN_LANGUAGES].some((language) => lower.includes(language)) &&
+    /(fluent|native|proficient|language|c1|c2|b2)/i.test(lower)
+  ) {
+    return "language";
+  }
+  if ([...KNOWN_DEGREE_HINTS].some((term) => lower.includes(term))) {
+    return "degree";
+  }
+  if ([...KNOWN_CERTIFICATION_HINTS].some((term) => lower.includes(term))) {
+    return "certification";
+  }
+  if (HARD_BLOCKER_PATTERNS.some((pattern) => pattern.test(lower))) {
+    return "other";
+  }
+  return undefined;
+}
+
 function parseFactContext(context: string[]) {
-  const trimmed = context.map((line) => line.trim()).filter(Boolean).slice(-2);
+  const trimmed = context.map((line) => line.trim()).filter(Boolean).slice(-3);
   if (!trimmed.length) {
     return {
       role: undefined,
@@ -1072,22 +1881,22 @@ function parseFactContext(context: string[]) {
     };
   }
 
-  const [first, second] = trimmed;
   const dateSource = trimmed.find((line) => hasDateLikeText(line));
   const dateRange = dateSource ? extractDateRange(dateSource) : undefined;
-
-  const role = first && !hasDateLikeText(first) && first.length < 90 ? first : undefined;
-  let company: string | undefined;
-
-  if (second && second.includes("|")) {
-    const companyCandidate = second
-      .split("|")
-      .map((part) => part.trim())
-      .find((part) => part && !hasDateLikeText(part));
-    company = companyCandidate || undefined;
-  } else if (second && !hasDateLikeText(second) && second.length < 90) {
-    company = second;
-  }
+  const role = trimmed.find(
+    (line) =>
+      !hasDateLikeText(line) &&
+      !line.includes("|") &&
+      line.length < 90 &&
+      /^[A-Z][A-Za-z0-9,&()'./ -]+$/.test(line),
+  );
+  const companyLine = trimmed.find((line) => line.includes("|")) ?? trimmed[1];
+  const company = companyLine
+    ? companyLine
+        .split("|")
+        .map((part) => part.trim())
+        .find((part) => part && !hasDateLikeText(part))
+    : undefined;
 
   return {
     role,
@@ -1103,13 +1912,13 @@ function extractDateRange(text: string) {
   return match?.[0];
 }
 
-function extractSkills(text: string) {
-  return extractKeywords(text, 10).filter((keyword) => !KNOWN_TOOLS.has(keyword));
+function extractFactKeywords(text: string, factKind: FactKind) {
+  const keywords = extractKeywords(text, factKind === "skills" ? 12 : 10);
+  return keywords.filter((keyword) => !KNOWN_TOOLS.has(keyword));
 }
 
 function extractTools(text: string) {
-  const normalizedText = normalizeText(text).toLowerCase();
-  return [...KNOWN_TOOLS].filter((tool) => normalizedText.includes(tool)).slice(0, 8);
+  return [...KNOWN_TOOLS].filter((tool) => containsTerm(text, tool)).slice(0, 10);
 }
 
 function extractMetrics(text: string) {
@@ -1122,56 +1931,187 @@ function extractMetrics(text: string) {
   return uniqueStrings(metrics).slice(0, 6);
 }
 
-function getFactConfidence(sectionLabel: string, text: string) {
-  if (EXPERIENCE_SECTIONS.has(sectionLabel)) return text.length > 35 ? 0.88 : 0.82;
-  if (SKILLS_SECTIONS.has(sectionLabel)) return 0.62;
-  if (EDUCATION_SECTIONS.has(sectionLabel)) return 0.74;
-  if (SUMMARY_SECTIONS.has(sectionLabel)) return 0.48;
-  return 0.68;
-}
+function detectExplicitLanguages(text: string, factKind: FactKind) {
+  const lower = text.toLowerCase();
+  const languages = [...KNOWN_LANGUAGES].filter((language) => containsTerm(lower, language));
 
-function buildMatchExplanation(
-  fact: CandidateFact,
-  overlap: string[],
-  strength: EvidenceStrength,
-) {
-  const overlapPreview = overlap.slice(0, 3).join(", ");
-  const sectionName = fact.sourceSection || "CV";
+  if (!languages.length) return [];
+  if (factKind === "language") return languages;
 
-  if (SKILLS_SECTIONS.has(sectionName.toLowerCase())) {
-    return `Skills evidence lists ${overlapPreview || "related terms"}, but it is not yet backed by a work example.`;
-  }
-
-  if (SUMMARY_SECTIONS.has(sectionName.toLowerCase())) {
-    return `Summary wording mentions ${overlapPreview || "related terms"}, so the match stays more cautious.`;
-  }
-
-  return `${strength === "strong" ? "Work" : "Relevant"} evidence in ${sectionName} mentions ${overlapPreview || "related terms"}.`;
-}
-
-function isRelevantJobSection(label: string, text: string) {
-  return (
-    label.includes("require") ||
-    label.includes("qualif") ||
-    label.includes("responsibilit") ||
-    label.includes("dut") ||
-    label.includes("skill") ||
-    label.includes("experience") ||
-    label.includes("about you") ||
-    label.includes("looking for") ||
-    hasRequirementCue(text)
+  return languages.filter(
+    (language) =>
+      new RegExp(`\\b${language}\\b\\s*(?:[:\\-]|\\(|$)`, "i").test(text) ||
+      LANGUAGE_PROFICIENCY_PATTERNS.some((pattern) => pattern.test(text)),
   );
 }
 
-function shouldKeepRequirementSentence(text: string, sectionLabel: string) {
-  const normalizedText = normalizeText(text);
-  if (normalizedText.length < 12 || isBoilerplate(normalizedText)) return false;
-  if (isLikelyJobTitleLine(normalizedText)) return false;
+function detectExplicitDegreeTerms(text: string) {
+  const lower = text.toLowerCase();
+  return [...KNOWN_DEGREE_HINTS]
+    .filter((term) => containsTerm(lower, term))
+    .map(normalizeKeywordPhrase);
+}
+
+function detectExplicitCertificationTerms(text: string) {
+  const lower = text.toLowerCase();
+  return [...KNOWN_CERTIFICATION_HINTS]
+    .filter((term) => containsTerm(lower, term))
+    .map(normalizeKeywordPhrase);
+}
+
+function extractExplicitYears(text: string) {
+  const match = text.match(
+    /\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\+?\s+years?\b/i,
+  );
+  return match ? parseNumericValue(match[0]) : null;
+}
+
+function extractRequiredYears(text: string) {
+  const match = text.match(
+    /\b(?:at least|min(?:imum)?|over|more than)?\s*(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\+?\s+years?\b/i,
+  );
+  const parsedYears = match ? parseNumericValue(match[0]) : null;
+  return parsedYears ?? undefined;
+}
+
+function deriveYearsFromDateRange(dateRange?: string) {
+  if (!dateRange) return null;
+
+  const lower = dateRange.toLowerCase();
+  const yearMatches = [...lower.matchAll(/\b(19|20)\d{2}\b/g)].map((match) =>
+    Number(match[0]),
+  );
+  if (!yearMatches.length) return null;
+
+  const startYear = yearMatches[0];
+  const endYear = lower.includes("present")
+    ? new Date().getUTCFullYear()
+    : yearMatches[1];
+
+  if (!startYear || !endYear || endYear < startYear) return null;
+  return endYear - startYear + (lower.includes("present") ? 1 : 0);
+}
+
+function getFactConfidence(factKind: FactKind, text: string) {
+  if (factKind === "experience" || factKind === "project") {
+    return text.length > 30 ? 0.9 : 0.84;
+  }
+  if (factKind === "skills") return 0.56;
+  if (factKind === "summary") return 0.44;
+  if (factKind === "education" || factKind === "certification" || factKind === "language") {
+    return 0.78;
+  }
+  if (factKind === "header") return 0.66;
+  return 0.68;
+}
+
+function getSectionWeight(factKind: FactKind) {
+  switch (factKind) {
+    case "experience":
+    case "project":
+      return 0.12;
+    case "education":
+    case "certification":
+    case "language":
+      return 0.08;
+    case "skills":
+      return 0.02;
+    case "summary":
+      return -0.08;
+    case "header":
+      return -0.04;
+    default:
+      return 0.03;
+  }
+}
+
+function splitRequirementLineIntoItems(text: string, intent: SectionIntent) {
+  const normalized = normalizeText(text);
+  if (!normalized) return [];
+
+  const sentenceCandidates = normalized
+    .split(/\s*;\s*/)
+    .flatMap((segment) => splitIntoSentences(segment).length ? splitIntoSentences(segment) : [segment]);
+  const items: string[] = [];
+
+  for (const candidate of sentenceCandidates) {
+    const cleaned = cleanListItem(candidate);
+    if (!cleaned) continue;
+
+    const colonParts = cleaned.split(/:\s+/);
+    const normalizedCandidate =
+      colonParts.length === 2 && colonParts[0].split(" ").length <= 4
+        ? colonParts[1]
+        : cleaned;
+
+    const splitItems = splitCompoundRequirementSentence(normalizedCandidate, intent);
+    items.push(...splitItems);
+  }
+
+  return dedupeByNormalizedText(items, (item) => item);
+}
+
+function splitCompoundRequirementSentence(text: string, intent: SectionIntent) {
+  const normalized = normalizeText(text);
+  if (!normalized) return [];
+  if (intent === "responsibility") return [normalized];
+
+  const strippedLeadIn = normalized.replace(
+    /^(?:you have|we are looking for|we're looking for|we’re looking for|must have|nice to have|experience with|experience in|proficiency in|knowledge of|skills and experience|what you bring)[:\s-]*/i,
+    "",
+  );
+
+  const commaCount = (strippedLeadIn.match(/,/g) ?? []).length;
+  const canSplitList =
+    commaCount >= 1 &&
+    /\b(?:and|or)\b/i.test(strippedLeadIn) &&
+    /(?:experience|knowledge|proficiency|skills?|tools?|platforms?)/i.test(normalized);
+
+  if (!canSplitList) return [normalized];
+
+  const parts = strippedLeadIn
+    .replace(/\band\b/gi, ",")
+    .split(/\s*,\s*/)
+    .map((part) => part.trim())
+    .filter((part) => part.length >= 3 && part.split(" ").length <= 6);
+
+  return parts.length >= 2 ? parts : [normalized];
+}
+
+function shouldKeepRequirementItem(
+  text: string,
+  intent: SectionIntent,
+  sectionLabel: string,
+) {
+  const normalized = normalizeText(text);
+  if (normalized.length < 3) return false;
+  if (isBoilerplateText(normalized)) return false;
+  if (isLikelyJobTitleLine(normalized)) return false;
+  if (/^(apply|click|submit|learn more)\b/i.test(normalized)) return false;
+
+  if (intent === "responsibility") {
+    return normalized.length >= 12;
+  }
+
+  if (intent === "must_have" || intent === "preferred" || intent === "about_you") {
+    return normalized.length >= 4;
+  }
 
   return (
-    isRelevantJobSection(sectionLabel, normalizedText) ||
-    hasRequirementCue(normalizedText) ||
-    hasToolCue(normalizedText)
+    hasRequirementCue(normalized) ||
+    hasToolCue(normalized) ||
+    DOMAIN_KEYWORDS.some((keyword) => normalized.toLowerCase().includes(keyword)) ||
+    SOFT_SKILL_KEYWORDS.some((keyword) => normalized.toLowerCase().includes(keyword)) ||
+    sectionLooksRelevant(sectionLabel)
+  );
+}
+
+function sectionLooksRelevant(label: string) {
+  const lowerLabel = label.toLowerCase();
+  return (
+    REQUIREMENT_SECTION_PATTERNS.some((pattern) => pattern.test(lowerLabel)) ||
+    RESPONSIBILITY_SECTION_PATTERNS.some((pattern) => pattern.test(lowerLabel)) ||
+    PREFERRED_SECTION_PATTERNS.some((pattern) => pattern.test(lowerLabel))
   );
 }
 
@@ -1181,50 +2121,70 @@ function hasRequirementCue(text: string) {
     MUST_HAVE_PATTERNS.some((pattern) => pattern.test(text)) ||
     NICE_TO_HAVE_PATTERNS.some((pattern) => pattern.test(text)) ||
     RESPONSIBILITY_PATTERNS.some((pattern) => pattern.test(text)) ||
-    /\bexperience with\b/i.test(text)
+    /\bexperience with\b/i.test(text) ||
+    /\byou have\b/i.test(text) ||
+    /\bwe are looking for\b/i.test(text)
   );
 }
 
 function hasToolCue(text: string) {
-  const lowerText = text.toLowerCase();
-  return [...KNOWN_TOOLS].some((tool) => lowerText.includes(tool));
+  return [...KNOWN_TOOLS].some((tool) => containsTerm(text, tool));
 }
 
-function isBoilerplate(text: string) {
-  return JOB_BOILERPLATE_PATTERNS.some((pattern) => pattern.test(text));
-}
-
-function isBulletLine(line: string) {
-  return /^\s*(?:[-*•·▪]|(?:\d+|[a-z])[\].)])\s+/.test(line);
-}
-
-function looksLikeContextLine(line: string) {
-  return (
-    line.length < 90 &&
-    (hasDateLikeText(line) || /\|/.test(line) || /^[A-Z][A-Za-z0-9,&()'./ -]+$/.test(line))
+function extractLocationPhrase(text: string) {
+  const match = text.match(
+    /\b(?:based in|located in|must reside in|onsite in|on-site in|hybrid in)\s+([a-z ,.-]+)/i,
   );
+  return match?.[1]?.replace(/[.,;]$/, "").trim();
 }
 
-function isLikelyJobTitleLine(line: string) {
+function extractLocationTokens(text: string) {
+  const locationPhrase = extractLocationPhrase(text);
+  if (!locationPhrase) {
+    return [];
+  }
+
+  return normalizeText(locationPhrase)
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((token) => token.length > 2 && !["and", "the"].includes(token))
+    .map((token) => token.replace(/[^a-z]/g, ""))
+    .filter(Boolean);
+}
+
+function describeHardBlocker(kind: HardBlockerKind, text: string) {
+  switch (kind) {
+    case "authorization":
+      return text.toLowerCase().includes("belgium")
+        ? "work authorization in Belgium"
+        : "work authorization";
+    case "location":
+      return extractLocationPhrase(text) ? `location in ${extractLocationPhrase(text)}` : "location";
+    case "language":
+      return detectExplicitLanguages(text, "language")[0] ?? "language proficiency";
+    case "degree":
+      return "degree requirement";
+    case "certification":
+      return "certification requirement";
+    case "clearance":
+      return "security clearance";
+    case "driving_license":
+      return "driving license";
+    case "travel":
+      return "travel availability";
+    case "shift":
+      return "shift or timezone availability";
+    default:
+      return "hard-blocker requirement";
+  }
+}
+
+function summarizeRequirementDomain(requirement: JobRequirement) {
   return (
-    line.length > 6 &&
-    line.length < 90 &&
-    !line.endsWith(".") &&
-    /^[A-Z][A-Za-z0-9,&()'./ -]+$/.test(line)
+    requirement.keywords.find((keyword) => keyword.includes(" ")) ??
+    requirement.keywords[0] ??
+    "the role area"
   );
-}
-
-function isWeakEvidenceSection(sectionLabel: string) {
-  return SUMMARY_SECTIONS.has(sectionLabel.toLowerCase());
-}
-
-function getSectionWeight(sectionLabel: string) {
-  const normalizedLabel = sectionLabel.toLowerCase();
-  if (EXPERIENCE_SECTIONS.has(normalizedLabel)) return 0.14;
-  if (EDUCATION_SECTIONS.has(normalizedLabel)) return 0.08;
-  if (SKILLS_SECTIONS.has(normalizedLabel)) return 0.03;
-  if (SUMMARY_SECTIONS.has(normalizedLabel)) return -0.06;
-  return 0.04;
 }
 
 function buildAtsWarning(
@@ -1243,8 +2203,14 @@ function buildAtsWarning(
   };
 }
 
+function sumImportance(requirements: JobRequirement[], status: EvidenceStatus) {
+  return requirements
+    .filter((requirement) => requirement.evidenceStatus === status)
+    .reduce((sum, requirement) => sum + requirement.importance, 0);
+}
+
 function hasKeywordStuffing(cvText: string) {
-  const keywords = extractKeywords(cvText, 10);
+  const keywords = extractKeywords(cvText, 12);
   return keywords.some((keyword) => {
     if (isGenericKeyword(keyword)) return false;
     return countOccurrences(cvText, keyword) >= 8;
@@ -1259,6 +2225,47 @@ function hasWallOfText(sections: SectionText[]) {
   );
 }
 
+function containsTerm(text: string, term: string) {
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, "i").test(
+    normalizeText(text).toLowerCase(),
+  );
+}
+
+function isBoilerplateText(text: string) {
+  return BOILERPLATE_TEXT_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function isBulletLine(line: string) {
+  return /^\s*(?:[-*•·▪]|(?:\d+|[a-z])[\].)])\s+/.test(line);
+}
+
+function looksLikeRoleContextLine(line: string) {
+  return (
+    line.length < 100 &&
+    (hasDateLikeText(line) ||
+      /\|/.test(line) ||
+      /^[A-Z][A-Za-z0-9,&()'./ -]+$/.test(line))
+  );
+}
+
+function isLikelyJobTitleLine(line: string) {
+  return (
+    line.length > 6 &&
+    line.length < 90 &&
+    !line.endsWith(".") &&
+    /^[A-Z][A-Za-z0-9,&()'./ -]+$/.test(line)
+  );
+}
+
 function cleanTitle(title: string) {
   return title.replace(/[-|].*$/, "").replace(/\s+/g, " ").trim();
+}
+
+function formatYears(years: number) {
+  return `${years} year${years === 1 ? "" : "s"}`;
+}
+
+function capitalize(value: string) {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
