@@ -14,6 +14,7 @@ import type {
 
 const DEFAULT_EXPORT_FILE_NAME_STEM = "smartcv-tailored-cv";
 const MAX_EXPORT_FILE_NAME_STEM_LENGTH = 64;
+const EXPORT_PREVIEW_SIGNATURE_VERSION = "phase6.v1";
 
 export function buildExportPreview(result: TailoredDraftResult): ExportPreview {
   const sections = buildExportPreviewSections(result);
@@ -162,14 +163,33 @@ export function collectValidatedExportPolishedItems(
     }));
 }
 
-export function buildExportPreviewSignature(preview: ExportPreview) {
+export function buildExportPreviewSignature(
+  result: TailoredDraftResult,
+  preview: ExportPreview,
+) {
+  const includedItemIds = preview.sections.flatMap((section) =>
+    section.items.map((item) => item.itemId),
+  );
+  const polishedItemStates = result.draft.sections
+    .flatMap((section) => section.items)
+    .filter((item) => includedItemIds.includes(item.id))
+    .map(
+      (item) =>
+        `${item.id}:${item.polish?.state ?? "not_requested"}:${
+          item.polish?.polishedText ?? ""
+        }`,
+    );
   const raw = [
-    "phase5.v1",
+    EXPORT_PREVIEW_SIGNATURE_VERSION,
     preview.fileNameStem,
     preview.plainText,
+    result.draft.status,
+    result.validation.blockedRequirementIds.join("|"),
+    result.validation.missingHighImportanceRequirementIds.join("|"),
+    includedItemIds.join("|"),
+    polishedItemStates.join("|"),
     String(preview.includedItemCount),
     String(preview.polishedItemCount),
-    String(preview.blockedRequirementCount),
   ].join("||");
 
   let hash = 0;
@@ -178,7 +198,7 @@ export function buildExportPreviewSignature(preview: ExportPreview) {
     hash = (hash * 31 + raw.charCodeAt(index)) % 2147483647;
   }
 
-  return `phase5.v1:${hash}:${preview.includedItemCount}`;
+  return `${EXPORT_PREVIEW_SIGNATURE_VERSION}:${hash}:${preview.includedItemCount}`;
 }
 
 export function buildExportFileNameStem(jobTitle?: string) {

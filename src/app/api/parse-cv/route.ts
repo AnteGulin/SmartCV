@@ -66,7 +66,7 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     const message = getPdfErrorMessage(error);
-    console.error("SmartCV PDF parse failed:", error);
+    console.error("SmartCV PDF parse failed.");
 
     return NextResponse.json(
       { error: message },
@@ -87,8 +87,8 @@ async function getPreviewImage(parser: PDFParse) {
     });
 
     return screenshot.pages[0]?.dataUrl ?? "";
-  } catch (error) {
-    console.warn("SmartCV PDF preview failed:", error);
+  } catch {
+    console.warn("SmartCV PDF preview unavailable.");
     return "";
   }
 }

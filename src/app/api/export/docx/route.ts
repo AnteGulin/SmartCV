@@ -1,6 +1,11 @@
 import { Document, HeadingLevel, Packer, Paragraph } from "docx";
 import { NextResponse } from "next/server";
 import {
+  DEFAULT_JSON_BODY_LIMIT_BYTES,
+  getSafeRouteErrorDetails,
+  readJsonWithLimit,
+} from "@/lib/api-guards";
+import {
   hasValidAnalyzeInput,
   prepareAnalyzePayload,
   runPhase1Analysis,
@@ -28,11 +33,20 @@ export async function POST(request: Request) {
   let body: Partial<ExportDocxRequest>;
 
   try {
-    body = (await request.json()) as Partial<ExportDocxRequest>;
-  } catch {
+    body = await readJsonWithLimit<Partial<ExportDocxRequest>>(
+      request,
+      DEFAULT_JSON_BODY_LIMIT_BYTES,
+    );
+  } catch (error) {
+    const details = getSafeRouteErrorDetails(
+      error,
+      "Could not read the DOCX export request.",
+      400,
+    );
+
     return NextResponse.json(
-      { error: "Could not read the DOCX export request." },
-      { status: 400 },
+      { error: details.message },
+      { status: details.status },
     );
   }
 

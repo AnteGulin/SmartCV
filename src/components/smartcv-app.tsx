@@ -92,6 +92,8 @@ type StoredWorkspace = {
 };
 
 const storageKey = "smartcv.workspace.v1";
+const WORKSPACE_SAVE_DEBOUNCE_MS = 300;
+const CONFIRMED_EVIDENCE_SAVE_DEBOUNCE_MS = 200;
 
 const sampleCv = `Alex Morgan
 Technical Support Specialist
@@ -389,7 +391,11 @@ export function SmartCvApp() {
       savedAt: new Date().toISOString(),
     };
 
-    window.localStorage.setItem(storageKey, JSON.stringify(workspace));
+    const timeout = window.setTimeout(() => {
+      window.localStorage.setItem(storageKey, JSON.stringify(workspace));
+    }, WORKSPACE_SAVE_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(timeout);
   }, [
     cvEditorMode,
     cvFileName,
@@ -414,10 +420,14 @@ export function SmartCvApp() {
   useEffect(() => {
     if (!hasHydrated) return;
 
-    window.localStorage.setItem(
-      CONFIRMED_EVIDENCE_STORAGE_KEY,
-      JSON.stringify(confirmedEvidence),
-    );
+    const timeout = window.setTimeout(() => {
+      window.localStorage.setItem(
+        CONFIRMED_EVIDENCE_STORAGE_KEY,
+        JSON.stringify(confirmedEvidence),
+      );
+    }, CONFIRMED_EVIDENCE_SAVE_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(timeout);
   }, [confirmedEvidence, hasHydrated]);
 
   function invalidateTailoredDraft() {
@@ -631,14 +641,21 @@ export function SmartCvApp() {
     [tailoredDraft],
   );
   const exportPreviewSignature = useMemo(
-    () => (exportPreview ? buildExportPreviewSignature(exportPreview) : null),
-    [exportPreview],
+    () =>
+      tailoredDraft && exportPreview
+        ? buildExportPreviewSignature(tailoredDraft, exportPreview)
+        : null,
+    [exportPreview, tailoredDraft],
   );
   const hasBlockedExportAcknowledgement = Boolean(
     exportPreviewSignature &&
       exportBlockedAckSignature &&
       exportBlockedAckSignature === exportPreviewSignature,
   );
+  const requiresBlockedDraftAcknowledgement =
+    exportPreview?.requiresBlockedAcknowledgement ?? false;
+  const hasAcknowledgedBlockedDraft =
+    !requiresBlockedDraftAcknowledgement || hasBlockedExportAcknowledgement;
   const exportValidation = useMemo<ExportValidationResult | null>(
     () =>
       tailoredDraft && exportPreview
@@ -863,6 +880,14 @@ export function SmartCvApp() {
       return;
     }
 
+    if (requiresBlockedDraftAcknowledgement && !hasBlockedExportAcknowledgement) {
+      setDraftError(
+        "Acknowledge the blocked draft warning in Export preview before copying the validated draft.",
+      );
+      setExportPreviewOpen(true);
+      return;
+    }
+
     try {
       await navigator.clipboard.writeText(tailoredDraft.draft.copyText);
       setCopiedDraft(true);
@@ -1029,7 +1054,7 @@ export function SmartCvApp() {
           <div className="flex flex-wrap items-center gap-2">
             <div className="mr-1 hidden items-center gap-2 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800 sm:inline-flex">
               <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-              {hasHydrated ? "Saved locally" : "Auto-save loading"}
+              {hasHydrated ? "Saved in this browser" : "Auto-save loading"}
             </div>
             <button
               type="button"
@@ -1177,6 +1202,8 @@ export function SmartCvApp() {
                 className="h-4 w-4 accent-emerald-700"
               />
             </label>
+
+            <PrivacyDisclosure />
           </div>
         </aside>
 
@@ -1221,6 +1248,8 @@ export function SmartCvApp() {
                 />
                 <TailoredDraftPanel
                   audit={draftAudit}
+                  blockedAcknowledged={hasAcknowledgedBlockedDraft}
+                  copyRequiresAcknowledgement={requiresBlockedDraftAcknowledgement}
                   copied={copiedDraft}
                   draftError={draftError}
                   draftLoading={draftLoading}
@@ -1748,6 +1777,22 @@ function WorkspaceGuide() {
           text="Generate a deterministic tailored draft that stays anchored to supported evidence."
         />
       </div>
+    </div>
+  );
+}
+
+function PrivacyDisclosure() {
+  return (
+    <div className="rounded-md border border-sky-200 bg-sky-50 p-3 text-sm text-sky-950">
+      <div className="mb-2 font-semibold">Privacy and truthfulness</div>
+      <p className="leading-6">
+        CV and job text may be saved in this browser&apos;s localStorage so your
+        workspace can persist. Clear workspace removes that locally stored data.
+        If configured, OpenAI may help server-side with requirement extraction
+        and eligible wording polish, but deterministic local analysis and
+        validation remain the source of truth. Only add evidence that is true
+        and suitable for a real application.
+      </p>
     </div>
   );
 }

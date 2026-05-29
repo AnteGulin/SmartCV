@@ -16,6 +16,8 @@ type DraftViewMode = "draft" | "audit";
 
 export function TailoredDraftPanel({
   audit,
+  blockedAcknowledged,
+  copyRequiresAcknowledgement,
   copied,
   draftError,
   draftLoading,
@@ -33,6 +35,8 @@ export function TailoredDraftPanel({
   result,
 }: {
   audit: DraftAuditResult | null;
+  blockedAcknowledged: boolean;
+  copyRequiresAcknowledgement: boolean;
   copied: boolean;
   draftError: string;
   draftLoading: boolean;
@@ -49,6 +53,10 @@ export function TailoredDraftPanel({
   onToggleAuditItem: (itemId: string) => void;
   result: TailoredDraftResult | null;
 }) {
+  const copyDisabled =
+    !result?.draft.copyText.trim() ||
+    (copyRequiresAcknowledgement && !blockedAcknowledged);
+
   return (
     <section className="rounded-md border border-zinc-200 bg-white p-4">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
@@ -91,7 +99,7 @@ export function TailoredDraftPanel({
           <button
             type="button"
             onClick={onCopy}
-            disabled={!result?.draft.copyText.trim()}
+            disabled={copyDisabled}
             className="inline-flex h-9 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Copy className="h-4 w-4" aria-hidden="true" />
@@ -109,6 +117,14 @@ export function TailoredDraftPanel({
       {polishError ? (
         <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900">
           {polishError}
+        </div>
+      ) : null}
+
+      {copyRequiresAcknowledgement && !blockedAcknowledged ? (
+        <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-3 text-sm text-red-900">
+          This draft still has blocked requirements. Acknowledge the blocked draft
+          warning in Export preview before copying the validated draft. Blocked
+          requirements remain warnings only and are not included as claims.
         </div>
       ) : null}
 

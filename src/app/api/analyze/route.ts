@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
 import {
+  DEFAULT_JSON_BODY_LIMIT_BYTES,
+  getSafeRouteErrorDetails,
+  readJsonWithLimit,
+} from "@/lib/api-guards";
+import {
   hasValidAnalyzeInput,
   prepareAnalyzePayload,
   runPhase1Analysis,
@@ -7,8 +12,24 @@ import {
 import type { AnalyzeRequest } from "@/lib/types";
 
 export async function POST(request: Request) {
+  let body: Partial<AnalyzeRequest>;
+
   try {
-    const body = (await request.json()) as Partial<AnalyzeRequest>;
+    body = await readJsonWithLimit<Partial<AnalyzeRequest>>(
+      request,
+      DEFAULT_JSON_BODY_LIMIT_BYTES,
+    );
+  } catch (error) {
+    const details = getSafeRouteErrorDetails(
+      error,
+      "Could not read the analysis request.",
+      400,
+    );
+
+    return NextResponse.json({ error: details.message }, { status: details.status });
+  }
+
+  try {
     const { ignoredConfirmationCount, payload } = prepareAnalyzePayload(body);
 
     if (!hasValidAnalyzeInput(payload)) {
@@ -26,8 +47,8 @@ export async function POST(request: Request) {
     );
   } catch {
     return NextResponse.json(
-      { error: "Could not read the analysis request." },
-      { status: 400 },
+      { error: "Could not analyze the CV and job description right now." },
+      { status: 500 },
     );
   }
 }

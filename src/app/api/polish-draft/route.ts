@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
 import {
+  DEFAULT_JSON_BODY_LIMIT_BYTES,
+  getSafeRouteErrorDetails,
+  readJsonWithLimit,
+} from "@/lib/api-guards";
+import {
   hasValidAnalyzeInput,
   prepareAnalyzePayload,
   runPhase1Analysis,
@@ -21,11 +26,20 @@ export async function POST(request: Request) {
   let body: Partial<PolishDraftRequest>;
 
   try {
-    body = (await request.json()) as Partial<PolishDraftRequest>;
-  } catch {
+    body = await readJsonWithLimit<Partial<PolishDraftRequest>>(
+      request,
+      DEFAULT_JSON_BODY_LIMIT_BYTES,
+    );
+  } catch (error) {
+    const details = getSafeRouteErrorDetails(
+      error,
+      "Could not read the polish request.",
+      400,
+    );
+
     return NextResponse.json(
-      { error: "Could not read the polish request." },
-      { status: 400 },
+      { error: details.message },
+      { status: details.status },
     );
   }
 
