@@ -1,12 +1,8 @@
 import { NextResponse } from "next/server";
 import { PDFParse } from "pdf-parse";
+import { splitCvSections } from "@/lib/cv-sections";
 
 export const runtime = "nodejs";
-
-type ParsedSection = {
-  label: string;
-  text: string;
-};
 
 export async function POST(request: Request) {
   let parser: PDFParse | null = null;
@@ -45,7 +41,7 @@ export async function POST(request: Request) {
 
     const result = await parser.getText();
     const text = normalizePdfText(result.text);
-    const previewImage = await getPreviewImage(parser);
+    const previewImages = await getPreviewImages(parser);
 
     if (text.length < 80) {
       return NextResponse.json(
@@ -61,12 +57,13 @@ export async function POST(request: Request) {
       fileName: file.name,
       pageCount: result.total,
       text,
-      previewImage,
-      sections: splitCvSections(text),
+      previewImage: previewImages[0] ?? "",
+      previewImages,
+      sections: splitCvSections(text, { beautify: true }),
     });
   } catch (error) {
     const message = getPdfErrorMessage(error);
-    console.error("SmartCV PDF parse failed.");
+    console.error("SmartCV PDF parse failed:", error);
 
     return NextResponse.json(
       { error: message },
@@ -77,19 +74,20 @@ export async function POST(request: Request) {
   }
 }
 
-async function getPreviewImage(parser: PDFParse) {
+async function getPreviewImages(parser: PDFParse) {
   try {
     const screenshot = await parser.getScreenshot({
-      first: 1,
       desiredWidth: 720,
       imageDataUrl: true,
       imageBuffer: false,
     });
 
-    return screenshot.pages[0]?.dataUrl ?? "";
-  } catch {
-    console.warn("SmartCV PDF preview unavailable.");
-    return "";
+    return screenshot.pages
+      .map((page) => page.dataUrl)
+      .filter((page): page is string => Boolean(page));
+  } catch (error) {
+    console.warn("SmartCV PDF preview failed:", error);
+    return [];
   }
 }
 
@@ -126,53 +124,9 @@ function isPdf(file: File) {
 function normalizePdfText(text: string) {
   return text
     .replace(/\r/g, "")
+    .replace(/\n\s*--\s*\d+\s+of\s+\d+\s*--\s*\n/gi, "\n")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .replace(/[ \t]{2,}/g, " ")
     .trim();
-}
-
-function splitCvSections(text: string): ParsedSection[] {
-  const headings = [
-    "summary",
-    "profile",
-    "experience",
-    "employment",
-    "work history",
-    "skills",
-    "education",
-    "certifications",
-    "projects",
-    "languages",
-  ];
-  const lines = text.split("\n");
-  const sections: ParsedSection[] = [];
-  let current: ParsedSection = { label: "Header", text: "" };
-
-  for (const line of lines) {
-    const normalized = line.trim().toLowerCase().replace(/:$/, "");
-    const isHeading = headings.includes(normalized);
-
-    if (isHeading) {
-      if (current.text.trim()) {
-        sections.push({ ...current, text: current.text.trim() });
-      }
-      current = { label: toTitleCase(normalized), text: "" };
-    } else {
-      current.text += `${line}\n`;
-    }
-  }
-
-  if (current.text.trim()) {
-    sections.push({ ...current, text: current.text.trim() });
-  }
-
-  return sections.slice(0, 12);
-}
-
-function toTitleCase(value: string) {
-  return value
-    .split(" ")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
 }
