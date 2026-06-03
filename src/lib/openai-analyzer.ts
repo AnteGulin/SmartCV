@@ -19,10 +19,10 @@ const assistSchema = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["text", "anchorSnippet"],
+        required: ["text", "sourceSection", "anchorSnippet"],
         properties: {
           text: { type: "string" },
-          sourceSection: { type: "string" },
+          sourceSection: { type: ["string", "null"] },
           anchorSnippet: { type: "string" },
         },
       },
@@ -111,7 +111,14 @@ export async function analyzeWithOpenAI(
   return {
     model,
     title: parsed.title,
-    requirements: parsed.requirements ?? [],
+    requirements: (parsed.requirements ?? []).map((requirement) => ({
+      text: requirement.text,
+      sourceSection:
+        typeof requirement.sourceSection === "string"
+          ? requirement.sourceSection
+          : undefined,
+      anchorSnippet: requirement.anchorSnippet,
+    })),
     warnings: parsed.warnings ?? [],
   };
 }

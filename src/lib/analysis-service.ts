@@ -1,6 +1,6 @@
 import { groundOpenAIAssist } from "@/lib/analysis-validation";
 import { analyzeLocally } from "@/lib/local-analyzer";
-import { analyzeWithOpenAI } from "@/lib/openai-analyzer";
+import { analyzeWithOpenAI, DEFAULT_OPENAI_MODEL } from "@/lib/openai-analyzer";
 import { sanitizeUserConfirmedEvidence } from "@/lib/user-evidence";
 import type {
   AnalyzeRequest,
@@ -40,6 +40,45 @@ export function hasValidAnalyzeInput(payload: AnalyzeRequest) {
   return payload.cvText.trim().length >= 80 && payload.jobText.trim().length >= 80;
 }
 
+function logOpenAIAssistFailure(error: unknown) {
+  if (process.env.NODE_ENV === "production") {
+    return;
+  }
+
+  const details = getOpenAIAssistErrorDetails(error);
+
+  console.error("SmartCV analyzeWithOpenAI failed:", {
+    model: process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL,
+    ...details,
+  });
+}
+
+function getOpenAIAssistErrorDetails(error: unknown) {
+  if (!(error instanceof Error)) {
+    return {
+      code: undefined,
+      message: "Unknown non-Error throw value.",
+      name: "NonErrorThrown",
+      status: undefined,
+      type: undefined,
+    };
+  }
+
+  const candidate = error as Error & {
+    code?: unknown;
+    status?: unknown;
+    type?: unknown;
+  };
+
+  return {
+    code: typeof candidate.code === "string" ? candidate.code : undefined,
+    message: error.message,
+    name: error.name,
+    status: typeof candidate.status === "number" ? candidate.status : undefined,
+    type: typeof candidate.type === "string" ? candidate.type : undefined,
+  };
+}
+
 export async function runPhase1Analysis(
   payload: PreparedAnalyzePayload,
   ignoredConfirmationCount = 0,
@@ -72,7 +111,9 @@ export async function runPhase1Analysis(
           : "local-deterministic-evidence-engine",
         warnings,
       });
-    } catch {
+    } catch (error) {
+      logOpenAIAssistFailure(error);
+
       return analyzeLocally(payload.cvText, payload.jobText, payload.jobUrl, {
         warnings: [
           ...confirmationWarnings,
