@@ -20,23 +20,19 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AtsHygienePanel } from "@/components/ats-hygiene-panel";
-import {
-  EvidenceConfirmationPanel,
-  type ConfirmationDraft,
-} from "@/components/evidence-confirmation-panel";
 import { ExportPanel } from "@/components/export-panel";
-import {
-  RequirementEvidenceMap,
-  type RequirementFilter,
-} from "@/components/requirement-evidence-map";
 import { TailoredDraftPanel } from "@/components/tailored-draft-panel";
+import {
+  TailoredSectionWorkspace,
+  type TailoredWorkspaceSection,
+} from "@/components/tailored-section-workspace";
 import {
   isPhase1AnalysisResult,
   isTailoredDraftResult,
 } from "@/lib/analysis-validation";
 import { splitTextIntoSections } from "@/lib/analysis-utils";
-import { buildDraftAudit, type DraftAuditResult } from "@/lib/draft-audit";
 import {
+  buildTailoredSectionOverridesFromDraft,
   buildDraftPolishSignature,
   buildTailorInputSignature,
 } from "@/lib/draft-composer";
@@ -47,28 +43,27 @@ import {
 } from "@/lib/export-model";
 import { validateExportPreview } from "@/lib/export-validation";
 import {
-  countEligibleDraftPolishItems,
+  applyTailoredSectionOverrides,
   getEligibleDraftPolishItemIds,
 } from "@/lib/draft-validation";
 import {
-  buildRequirementFingerprint,
   CONFIRMED_EVIDENCE_STORAGE_KEY,
-  createUserConfirmedEvidenceId,
   sanitizeUserConfirmedEvidence,
 } from "@/lib/user-evidence";
 import type {
   ExportFormat,
   ExportPreview,
   ExportValidationResult,
+  EditableTailoredSectionId,
   Phase1AnalysisResult,
+  RegenerateSectionResponse,
   SectionText,
   TailoredDraftResult,
+  TailoredSectionOverride,
   UserConfirmedEvidence,
-  UserEvidenceType,
 } from "@/lib/types";
 
 type CvEditorMode = "sections" | "full";
-type DraftViewMode = "draft" | "audit";
 
 type StoredWorkspace = {
   cvText: string;
@@ -80,14 +75,12 @@ type StoredWorkspace = {
   cvEditorMode: CvEditorMode;
   result: Phase1AnalysisResult | null;
   tailoredDraft: TailoredDraftResult | null;
+  tailoredSectionOverrides?: TailoredSectionOverride[];
   tailoredDraftSignature: string | null;
   tailoredDraftPolishSignature: string | null;
-  draftViewMode?: DraftViewMode;
-  expandedDraftAuditItemIds?: string[];
   exportPreviewOpen?: boolean;
   exportFormatPreference?: ExportFormat;
   exportBlockedAckSignature?: string | null;
-  requirementFilter: RequirementFilter;
   savedAt: string;
 };
 
@@ -164,20 +157,17 @@ export function SmartCvApp() {
   );
   const [tailoredDraftPolishSignature, setTailoredDraftPolishSignature] =
     useState<string | null>(null);
-  const [requirementFilter, setRequirementFilter] =
-    useState<RequirementFilter>("all");
+  const [tailoredSectionOverrides, setTailoredSectionOverrides] = useState<
+    TailoredSectionOverride[]
+  >([]);
   const [confirmedEvidence, setConfirmedEvidence] = useState<UserConfirmedEvidence[]>([]);
-  const [confirmationDrafts, setConfirmationDrafts] = useState<
-    Record<string, ConfirmationDraft>
-  >({});
   const [draftLoading, setDraftLoading] = useState(false);
   const [draftError, setDraftError] = useState("");
-  const [polishLoading, setPolishLoading] = useState(false);
-  const [polishError, setPolishError] = useState("");
-  const [draftViewMode, setDraftViewMode] = useState<DraftViewMode>("draft");
-  const [expandedDraftAuditItemIds, setExpandedDraftAuditItemIds] = useState<string[]>(
-    [],
-  );
+  const [regeneratingSectionId, setRegeneratingSectionId] =
+    useState<EditableTailoredSectionId | null>(null);
+  const [sectionWarnings, setSectionWarnings] = useState<
+    Partial<Record<EditableTailoredSectionId, string>>
+  >({});
   const [exportPreviewOpen, setExportPreviewOpen] = useState(true);
   const [exportFormatPreference, setExportFormatPreference] =
     useState<ExportFormat | null>(null);
@@ -310,31 +300,28 @@ export function SmartCvApp() {
               workspace.tailoredDraftPolishSignature === expectedPolishSignature)
               ? storedTailoredDraft
               : null;
-          const hydratedDraftItemIds = new Set(
-            nextTailoredDraft?.draft.sections.flatMap((section) =>
-              section.items.map((item) => item.id),
-            ) ?? [],
-          );
           setResult(
             nextTailoredDraft?.analysis ??
               (isPhase1AnalysisResult(workspace.result) ? workspace.result : null),
           );
           setTailoredDraft(nextTailoredDraft);
+          setTailoredSectionOverrides(
+            nextTailoredDraft && isTailoredSectionOverrideArray(workspace.tailoredSectionOverrides)
+              ? workspace.tailoredSectionOverrides
+              : nextTailoredDraft
+                ? buildTailoredSectionOverridesFromDraft(
+                    isSectionArray(workspace.parsedCvSections)
+                      ? workspace.parsedCvSections
+                      : splitTextIntoSections(nextCvText, "cv"),
+                    nextTailoredDraft.draft.sections,
+                  )
+                : [],
+          );
           setTailoredDraftSignature(nextTailoredDraft ? nextDraftSignature : null);
           setTailoredDraftPolishSignature(
             nextTailoredDraft?.meta.polish?.attempted
               ? expectedPolishSignature
               : null,
-          );
-          setDraftViewMode(
-            isDraftViewMode(workspace.draftViewMode) ? workspace.draftViewMode : "draft",
-          );
-          setExpandedDraftAuditItemIds(
-            nextTailoredDraft && isStringArray(workspace.expandedDraftAuditItemIds)
-              ? workspace.expandedDraftAuditItemIds.filter((itemId) =>
-                  hydratedDraftItemIds.has(itemId),
-                )
-              : [],
           );
           setExportPreviewOpen(
             typeof workspace.exportPreviewOpen === "boolean"
@@ -350,11 +337,6 @@ export function SmartCvApp() {
             typeof workspace.exportBlockedAckSignature === "string"
               ? workspace.exportBlockedAckSignature
               : null,
-          );
-          setRequirementFilter(
-            isRequirementFilter(workspace.requirementFilter)
-              ? workspace.requirementFilter
-              : "all",
           );
         } catch {
           window.localStorage.removeItem(storageKey);
@@ -380,14 +362,12 @@ export function SmartCvApp() {
       cvEditorMode,
       result,
       tailoredDraft,
+      tailoredSectionOverrides,
       tailoredDraftSignature,
       tailoredDraftPolishSignature,
-      draftViewMode,
-      expandedDraftAuditItemIds,
       exportPreviewOpen,
       exportFormatPreference: exportFormatPreference ?? undefined,
       exportBlockedAckSignature,
-      requirementFilter,
       savedAt: new Date().toISOString(),
     };
 
@@ -400,21 +380,19 @@ export function SmartCvApp() {
     cvEditorMode,
     cvFileName,
     cvText,
-    draftViewMode,
     exportBlockedAckSignature,
     exportFormatPreference,
     exportPreviewOpen,
     forceLocal,
-    expandedDraftAuditItemIds,
     hasHydrated,
     jobText,
     jobUrl,
     parsedCvSections,
-    requirementFilter,
     result,
     tailoredDraft,
     tailoredDraftPolishSignature,
     tailoredDraftSignature,
+    tailoredSectionOverrides,
   ]);
 
   useEffect(() => {
@@ -434,14 +412,14 @@ export function SmartCvApp() {
     setTailoredDraft(null);
     setTailoredDraftSignature(null);
     setTailoredDraftPolishSignature(null);
-    setExpandedDraftAuditItemIds([]);
+    setTailoredSectionOverrides([]);
+    setRegeneratingSectionId(null);
+    setSectionWarnings({});
     setExportBlockedAckSignature(null);
     setCopiedDraft(false);
     setDraftError("");
     setExportError("");
     setDocxExportLoading(false);
-    setPolishError("");
-    setPolishLoading(false);
   }
 
   async function fetchJobText() {
@@ -462,7 +440,6 @@ export function SmartCvApp() {
       setJobText(payload.text || "");
       setResult(null);
       invalidateTailoredDraft();
-      setRequirementFilter("all");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Job fetch failed.");
     } finally {
@@ -508,7 +485,6 @@ export function SmartCvApp() {
       );
       setResult(null);
       invalidateTailoredDraft();
-      setRequirementFilter("all");
     } catch (reason) {
       setError(
         reason instanceof Error
@@ -551,7 +527,6 @@ export function SmartCvApp() {
 
       setResult(payload);
       invalidateTailoredDraft();
-      setRequirementFilter("all");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Analysis failed.");
     } finally {
@@ -569,7 +544,6 @@ export function SmartCvApp() {
     setParsedCvSections(splitTextIntoSections(sampleCv, "cv"));
     setResult(null);
     invalidateTailoredDraft();
-    setRequirementFilter("all");
     setError("");
   }
 
@@ -585,9 +559,7 @@ export function SmartCvApp() {
     setParsedCvSections([]);
     setResult(null);
     invalidateTailoredDraft();
-    setRequirementFilter("all");
     setConfirmedEvidence([]);
-    setConfirmationDrafts({});
     setExportPreviewOpen(true);
     setExportFormatPreference(null);
     setExportBlockedAckSignature(null);
@@ -620,32 +592,39 @@ export function SmartCvApp() {
   const userFactCount = result
     ? result.cv.facts.filter((fact) => fact.source === "user_confirmed").length
     : 0;
-  const readyDraftItemCount = tailoredDraft
-    ? tailoredDraft.draft.sections
+  const workingTailoredDraft = useMemo<TailoredDraftResult | null>(
+    () =>
+      tailoredDraft
+        ? applyTailoredSectionOverrides(
+            tailoredDraft,
+            parsedCvSections,
+            tailoredSectionOverrides,
+          )
+        : null,
+    [parsedCvSections, tailoredDraft, tailoredSectionOverrides],
+  );
+  const readyDraftItemCount = workingTailoredDraft
+    ? workingTailoredDraft.draft.sections
         .flatMap((section) => section.items)
         .filter(
           (item) =>
             item.reviewState === "ready" && item.type !== "review_note",
         ).length
     : 0;
-  const eligiblePolishCount = tailoredDraft
-    ? countEligibleDraftPolishItems(tailoredDraft)
+  const eligiblePolishCount = workingTailoredDraft
+    ? getEligibleDraftPolishItemIds(workingTailoredDraft).length
     : 0;
-  const polishedDraftItemCount = tailoredDraft?.meta.polish?.polishedCount ?? 0;
-  const draftAudit = useMemo<DraftAuditResult | null>(
-    () => (tailoredDraft ? buildDraftAudit(tailoredDraft) : null),
-    [tailoredDraft],
-  );
+  const polishedDraftItemCount = workingTailoredDraft?.meta.polish?.polishedCount ?? 0;
   const exportPreview = useMemo<ExportPreview | null>(
-    () => (tailoredDraft ? buildExportPreview(tailoredDraft) : null),
-    [tailoredDraft],
+    () => (workingTailoredDraft ? buildExportPreview(workingTailoredDraft) : null),
+    [workingTailoredDraft],
   );
   const exportPreviewSignature = useMemo(
     () =>
-      tailoredDraft && exportPreview
-        ? buildExportPreviewSignature(tailoredDraft, exportPreview)
+      workingTailoredDraft && exportPreview
+        ? buildExportPreviewSignature(workingTailoredDraft, exportPreview)
         : null,
-    [exportPreview, tailoredDraft],
+    [exportPreview, workingTailoredDraft],
   );
   const hasBlockedExportAcknowledgement = Boolean(
     exportPreviewSignature &&
@@ -654,99 +633,28 @@ export function SmartCvApp() {
   );
   const requiresBlockedDraftAcknowledgement =
     exportPreview?.requiresBlockedAcknowledgement ?? false;
-  const hasAcknowledgedBlockedDraft =
-    !requiresBlockedDraftAcknowledgement || hasBlockedExportAcknowledgement;
   const exportValidation = useMemo<ExportValidationResult | null>(
     () =>
-      tailoredDraft && exportPreview
-        ? validateExportPreview(tailoredDraft, exportPreview, {
+      workingTailoredDraft && exportPreview
+        ? validateExportPreview(workingTailoredDraft, exportPreview, {
             acknowledgedBlockedDraft: hasBlockedExportAcknowledgement,
           })
         : null,
-    [exportPreview, hasBlockedExportAcknowledgement, tailoredDraft],
+    [exportPreview, hasBlockedExportAcknowledgement, workingTailoredDraft],
   );
-  const includedDraftItemCount = draftAudit?.summary.includedInCopyCount ?? 0;
-  const excludedDraftItemCount = draftAudit?.summary.excludedCount ?? 0;
-
-  function updateConfirmationDraft(
-    requirementFingerprint: string,
-    nextDraft: ConfirmationDraft,
-  ) {
-    setConfirmationDrafts((current) => ({
-      ...current,
-      [requirementFingerprint]: nextDraft,
-    }));
-  }
-
-  function saveConfirmedEvidence(
-    requirementId: string | undefined,
-    requirementText: string,
-    evidenceType: UserEvidenceType,
-    text: string,
-  ) {
-    const normalizedText = text.trim();
-    const requirementFingerprint = buildRequirementFingerprint(requirementText);
-
-    if (!requirementFingerprint || !normalizedText) {
-      return;
-    }
-
-    setConfirmedEvidence((current) => {
-      const existing = current.find(
-        (item) => item.requirementFingerprint === requirementFingerprint,
-      );
-      const timestamp = new Date().toISOString();
-
-      if (existing) {
-        return current.map((item) =>
-          item.requirementFingerprint === requirementFingerprint
-            ? {
-                ...item,
-                requirementId,
-                requirementText,
-                evidenceType,
-                text: normalizedText,
-                updatedAt: timestamp,
-              }
-            : item,
-        );
-      }
-
-      return [
-        ...current,
-        {
-          id: createUserConfirmedEvidenceId(),
-          requirementId,
-          requirementText,
-          requirementFingerprint,
-          evidenceType,
-          text: normalizedText,
-          createdAt: timestamp,
-        },
-      ];
-    });
-
-    setConfirmationDrafts((current) => ({
-      ...current,
-      [requirementFingerprint]: {
-        evidenceType,
-        text: normalizedText,
-      },
-    }));
-    invalidateTailoredDraft();
-  }
-
-  function removeConfirmedEvidence(requirementFingerprint: string) {
-    setConfirmedEvidence((current) =>
-      current.filter((item) => item.requirementFingerprint !== requirementFingerprint),
-    );
-    setConfirmationDrafts((current) => {
-      const nextDrafts = { ...current };
-      delete nextDrafts[requirementFingerprint];
-      return nextDrafts;
-    });
-    invalidateTailoredDraft();
-  }
+  const includedDraftItemCount = exportPreview?.includedItemCount ?? 0;
+  const excludedDraftItemCount = exportPreview?.excludedItemCount ?? 0;
+  const pendingRequirementCount = result
+    ? result.job.requirements.filter(
+        (requirement) => requirement.evidenceStatus !== "supported",
+      ).length
+    : 0;
+  const improvementSuggestionCount =
+    result?.improvements?.sectionGroups.reduce(
+      (sum, group) => sum + group.suggestions.length,
+      0,
+    ) ?? 0;
+  const improvementQuestionCount = result?.improvements?.questions.length ?? 0;
 
   async function generateTailoredDraft() {
     if (!canAnalyze) {
@@ -755,7 +663,6 @@ export function SmartCvApp() {
     }
 
     setDraftError("");
-    setPolishError("");
     setDraftLoading(true);
 
     try {
@@ -782,9 +689,12 @@ export function SmartCvApp() {
 
       setResult(payload.analysis);
       setTailoredDraft(payload);
+      setTailoredSectionOverrides(
+        buildTailoredSectionOverridesFromDraft(parsedCvSections, payload.draft.sections),
+      );
+      setSectionWarnings({});
       setTailoredDraftSignature(tailorInputSignature);
       setTailoredDraftPolishSignature(null);
-      setExpandedDraftAuditItemIds([]);
       setExportPreviewOpen(true);
       setExportBlockedAckSignature(null);
       setExportError("");
@@ -800,83 +710,8 @@ export function SmartCvApp() {
     }
   }
 
-  async function polishTailoredDraft() {
-    if (!tailoredDraft) {
-      setPolishError("Generate a deterministic tailored draft before polishing wording.");
-      return;
-    }
-
-    const eligibleItemIds = getEligibleDraftPolishItemIds(tailoredDraft);
-
-    if (!eligibleItemIds.length) {
-      setPolishError(
-        "No eligible CV-backed experience or project bullets are available for OpenAI wording polish.",
-      );
-      return;
-    }
-
-    setDraftError("");
-    setPolishError("");
-    setPolishLoading(true);
-
-    try {
-      const response = await fetch("/api/polish-draft", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          cvText,
-          jobText,
-          jobUrl,
-          forceLocal,
-          confirmedEvidence,
-          itemIds: eligibleItemIds,
-        }),
-      });
-      const payload = await response.json();
-
-      if (!response.ok) {
-        throw new Error(payload.error || "Wording polish failed.");
-      }
-
-      if (!isTailoredDraftResult(payload)) {
-        throw new Error("Polish response did not match the tailored draft schema.");
-      }
-
-      const nextPolishSignature = payload.meta.polish?.attempted
-        ? buildDraftPolishSignature(
-            tailorInputSignature,
-            getEligibleDraftPolishItemIds(payload),
-            payload.meta.polish.model,
-          )
-        : null;
-      const polishedDraftItemIds = new Set(
-        payload.draft.sections.flatMap((section) =>
-          section.items.map((item) => item.id),
-        ),
-      );
-
-      setResult(payload.analysis);
-      setTailoredDraft(payload);
-      setTailoredDraftSignature(tailorInputSignature);
-      setTailoredDraftPolishSignature(nextPolishSignature);
-      setExpandedDraftAuditItemIds((current) =>
-        current.filter((itemId) => polishedDraftItemIds.has(itemId)),
-      );
-      setExportPreviewOpen(true);
-      setExportBlockedAckSignature(null);
-      setExportError("");
-      setCopiedDraft(false);
-    } catch (reason) {
-      setPolishError(
-        reason instanceof Error ? reason.message : "Wording polish failed.",
-      );
-    } finally {
-      setPolishLoading(false);
-    }
-  }
-
   async function copyValidatedDraft() {
-    if (!tailoredDraft?.draft.copyText.trim()) {
+    if (!workingTailoredDraft?.draft.copyText.trim()) {
       return;
     }
 
@@ -889,7 +724,7 @@ export function SmartCvApp() {
     }
 
     try {
-      await navigator.clipboard.writeText(tailoredDraft.draft.copyText);
+      await navigator.clipboard.writeText(workingTailoredDraft.draft.copyText);
       setCopiedDraft(true);
       window.setTimeout(() => setCopiedDraft(false), 2000);
     } catch {
@@ -904,7 +739,7 @@ export function SmartCvApp() {
   }
 
   function ensureExportReady() {
-    if (!tailoredDraft || !exportPreview || !exportValidation) {
+    if (!workingTailoredDraft || !exportPreview || !exportValidation) {
       setExportError("Generate a tailored draft before exporting.");
       return null;
     }
@@ -938,7 +773,7 @@ export function SmartCvApp() {
   async function downloadDocxExport() {
     const ready = ensureExportReady();
 
-    if (!ready || !tailoredDraft) {
+    if (!ready || !workingTailoredDraft) {
       return;
     }
 
@@ -957,7 +792,8 @@ export function SmartCvApp() {
           format: "docx",
           confirmedEvidence,
           acknowledgedBlockedDraft: hasBlockedExportAcknowledgement,
-          polishedItems: collectValidatedExportPolishedItems(tailoredDraft),
+          polishedItems: collectValidatedExportPolishedItems(workingTailoredDraft),
+          sectionOverrides: tailoredSectionOverrides,
         }),
       });
 
@@ -1028,12 +864,106 @@ export function SmartCvApp() {
     runPrint();
   }
 
-  function toggleDraftAuditItem(itemId: string) {
-    setExpandedDraftAuditItemIds((current) =>
-      current.includes(itemId)
-        ? current.filter((existingId) => existingId !== itemId)
-        : [...current, itemId],
+  const workspaceSections = useMemo<TailoredWorkspaceSection[]>(
+    () =>
+      buildWorkspaceSections(
+        parsedCvSections,
+        tailoredSectionOverrides,
+        result,
+        sectionWarnings,
+      ),
+    [parsedCvSections, result, sectionWarnings, tailoredSectionOverrides],
+  );
+
+  function updateTailoredSectionText(
+    sectionId: EditableTailoredSectionId,
+    value: string,
+  ) {
+    setTailoredSectionOverrides((current) =>
+      upsertSectionOverride(current, sectionId, value),
     );
+    setSectionWarnings((current) => {
+      if (!current[sectionId]) {
+        return current;
+      }
+
+      const next = { ...current };
+      delete next[sectionId];
+      return next;
+    });
+    setCopiedDraft(false);
+    setExportBlockedAckSignature(null);
+  }
+
+  async function regenerateTailoredSection(sectionId: EditableTailoredSectionId) {
+    if (!tailoredDraft) {
+      setDraftError("Generate a tailored CV before regenerating one section.");
+      return;
+    }
+
+    const targetSection = workspaceSections.find(
+      (section) => section.sectionId === sectionId,
+    );
+
+    if (!targetSection) {
+      return;
+    }
+
+    setDraftError("");
+    setRegeneratingSectionId(sectionId);
+
+    try {
+      const response = await fetch("/api/regenerate-section", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          cvText,
+          jobText,
+          jobUrl,
+          forceLocal,
+          confirmedEvidence,
+          sectionId,
+          sectionLabel: targetSection.title,
+          originalSectionText: targetSection.originalText,
+          currentTailoredSectionText: targetSection.tailoredText,
+        }),
+      });
+      const payload = (await response.json()) as
+        | { error?: string }
+        | RegenerateSectionResponse;
+
+      if (!response.ok) {
+        throw new Error(
+          "error" in payload && payload.error
+            ? payload.error
+            : "Could not regenerate that section right now.",
+        );
+      }
+
+      if (!isRegenerateSectionResponse(payload)) {
+        throw new Error("Section regeneration returned an unexpected response.");
+      }
+
+      setTailoredSectionOverrides((current) =>
+        upsertSectionOverride(current, sectionId, payload.text),
+      );
+      setSectionWarnings((current) => ({
+        ...current,
+        [sectionId]: payload.warnings[0],
+      }));
+      setCopiedDraft(false);
+      setExportBlockedAckSignature(null);
+    } catch (reason) {
+      setSectionWarnings((current) => ({
+        ...current,
+        [sectionId]:
+          reason instanceof Error
+            ? reason.message
+            : "Could not regenerate that section right now.",
+      }));
+    } finally {
+      setRegeneratingSectionId(null);
+    }
   }
 
   return (
@@ -1077,16 +1007,30 @@ export function SmartCvApp() {
             <button
               type="button"
               onClick={analyze}
-              disabled={loading || !canAnalyze}
-              title="Analyze CV against job"
-              className="inline-flex h-9 items-center gap-2 rounded-md bg-zinc-950 px-4 text-sm font-semibold text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-300"
+              disabled={loading || draftLoading || !canAnalyze}
+              title="Analyze job requirements without generating the tailored CV yet"
+              className="inline-flex h-9 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {loading ? (
                 <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
               ) : (
+                <Search className="h-4 w-4" aria-hidden="true" />
+              )}
+              Analyze only
+            </button>
+            <button
+              type="button"
+              onClick={generateTailoredDraft}
+              disabled={draftLoading || loading || !canAnalyze}
+              title="Analyze and generate tailored CV"
+              className="inline-flex h-9 items-center gap-2 rounded-md bg-zinc-950 px-4 text-sm font-semibold text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-300"
+            >
+              {draftLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
                 <Wand2 className="h-4 w-4" aria-hidden="true" />
               )}
-              Analyze
+              {tailoredDraft ? "Refresh tailored CV" : "Generate tailored CV"}
             </button>
           </div>
         </div>
@@ -1220,43 +1164,15 @@ export function SmartCvApp() {
               </div>
             ) : null}
 
-            <OriginalCvEditor
-              cvText={cvText}
-              mode={cvEditorMode}
-              sections={parsedCvSections}
-              onModeChange={setCvEditorMode}
-              onFullChange={updateFullCv}
-              onSectionChange={updateCvSection}
-            />
-
-            {result ? (
+            {workingTailoredDraft ? (
               <>
-                <RequirementEvidenceMap
-                  requirements={result.job.requirements}
-                  filter={requirementFilter}
-                  onFilterChange={setRequirementFilter}
-                />
-                <EvidenceConfirmationPanel
-                  requirements={result.job.requirements}
-                  confirmedEvidence={confirmedEvidence}
-                  drafts={confirmationDrafts}
-                  isAnalyzing={loading}
-                  onDraftChange={updateConfirmationDraft}
-                  onRemove={removeConfirmedEvidence}
-                  onRunAnalysis={analyze}
-                  onSave={saveConfirmedEvidence}
-                />
                 <TailoredDraftPanel
-                  audit={draftAudit}
-                  blockedAcknowledged={hasAcknowledgedBlockedDraft}
-                  copyRequiresAcknowledgement={requiresBlockedDraftAcknowledgement}
+                  analysisReady={Boolean(result)}
                   copied={copiedDraft}
                   draftError={draftError}
                   draftLoading={draftLoading}
-                  draftViewMode={draftViewMode}
-                  expandedAuditItemIds={expandedDraftAuditItemIds}
                   exportPanel={
-                    tailoredDraft && exportPreview && exportValidation ? (
+                    exportPreview && exportValidation ? (
                       <ExportPanel
                         acknowledgedBlockedDraft={hasBlockedExportAcknowledgement}
                         docxLoading={docxExportLoading}
@@ -1277,18 +1193,40 @@ export function SmartCvApp() {
                       />
                     ) : null
                   }
-                  polishEligibleCount={eligiblePolishCount}
-                  polishError={polishError}
-                  polishLoading={polishLoading}
                   onCopy={copyValidatedDraft}
-                  onDraftViewModeChange={setDraftViewMode}
                   onGenerate={generateTailoredDraft}
-                  onPolish={polishTailoredDraft}
-                  onToggleAuditItem={toggleDraftAuditItem}
-                  result={tailoredDraft}
+                  result={workingTailoredDraft}
+                />
+                <TailoredSectionWorkspace
+                  sections={workspaceSections}
+                  regeneratingSectionId={regeneratingSectionId}
+                  onRegenerateSection={regenerateTailoredSection}
+                  onSectionTextChange={updateTailoredSectionText}
                 />
               </>
-            ) : null}
+            ) : (
+              <>
+                {result ? (
+                  <TailoredDraftPanel
+                    analysisReady={Boolean(result)}
+                    copied={copiedDraft}
+                    draftError={draftError}
+                    draftLoading={draftLoading}
+                    onCopy={copyValidatedDraft}
+                    onGenerate={generateTailoredDraft}
+                    result={null}
+                  />
+                ) : null}
+                <OriginalCvEditor
+                  cvText={cvText}
+                  mode={cvEditorMode}
+                  sections={parsedCvSections}
+                  onModeChange={setCvEditorMode}
+                  onFullChange={updateFullCv}
+                  onSectionChange={updateCvSection}
+                />
+              </>
+            )}
           </div>
         </section>
 
@@ -1362,6 +1300,21 @@ export function SmartCvApp() {
                   />
                 </SummaryCard>
 
+                <SummaryCard title="Tailoring plan">
+                  <SummaryLine
+                    label="Draft suggestions"
+                    value={String(improvementSuggestionCount)}
+                  />
+                  <SummaryLine
+                    label="Needs confirmation"
+                    value={String(improvementQuestionCount)}
+                  />
+                  <SummaryLine
+                    label="Pending requirements"
+                    value={String(pendingRequirementCount)}
+                  />
+                </SummaryCard>
+
                 <SummaryCard title="User confirmations">
                   <SummaryLine
                     label="Saved confirmations"
@@ -1377,17 +1330,17 @@ export function SmartCvApp() {
                   />
                 </SummaryCard>
 
-                {tailoredDraft ? (
+                {workingTailoredDraft ? (
                   <SummaryCard title="Tailored draft">
                     <SummaryLine
                       label="Status"
                       value={
-                        tailoredDraft.draft.status === "needs_review"
+                        workingTailoredDraft.draft.status === "needs_review"
                           ? "Needs review"
-                          : tailoredDraft.draft.status
+                          : workingTailoredDraft.draft.status
                               .charAt(0)
                               .toUpperCase() +
-                            tailoredDraft.draft.status.slice(1)
+                            workingTailoredDraft.draft.status.slice(1)
                       }
                     />
                     <SummaryLine
@@ -1455,26 +1408,8 @@ function isCvEditorMode(value: unknown): value is CvEditorMode {
   return value === "sections" || value === "full";
 }
 
-function isDraftViewMode(value: unknown): value is DraftViewMode {
-  return value === "draft" || value === "audit";
-}
-
 function isExportFormat(value: unknown): value is ExportFormat {
   return value === "txt" || value === "docx" || value === "pdf";
-}
-
-function isRequirementFilter(value: unknown): value is RequirementFilter {
-  return (
-    value === "all" ||
-    value === "supported" ||
-    value === "weak" ||
-    value === "missing" ||
-    value === "blocked"
-  );
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 function isSectionArray(value: unknown): value is SectionText[] {
@@ -1527,6 +1462,232 @@ function composeCvSections(sections: SectionText[]) {
     })
     .filter(Boolean)
     .join("\n\n");
+}
+
+function isTailoredSectionOverrideArray(
+  value: unknown,
+): value is TailoredSectionOverride[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (item) =>
+        item &&
+        typeof item === "object" &&
+        isEditableSectionId(item.sectionId) &&
+        typeof item.text === "string",
+    )
+  );
+}
+
+function isEditableSectionId(value: unknown): value is EditableTailoredSectionId {
+  return (
+    value === "header" ||
+    value === "summary" ||
+    value === "skills" ||
+    value === "experience" ||
+    value === "projects" ||
+    value === "education" ||
+    value === "certifications" ||
+    value === "languages"
+  );
+}
+
+function isRegenerateSectionResponse(
+  value: unknown,
+): value is RegenerateSectionResponse {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    isEditableSectionId((value as RegenerateSectionResponse).sectionId) &&
+    typeof (value as RegenerateSectionResponse).sectionLabel === "string" &&
+    typeof (value as RegenerateSectionResponse).text === "string" &&
+    Array.isArray((value as RegenerateSectionResponse).warnings)
+  );
+}
+
+function upsertSectionOverride(
+  current: TailoredSectionOverride[],
+  sectionId: EditableTailoredSectionId,
+  value: string,
+) {
+  const text = value;
+  const hasExisting = current.some((item) => item.sectionId === sectionId);
+
+  if (hasExisting) {
+    return current.map((item) =>
+      item.sectionId === sectionId ? { ...item, text } : item,
+    );
+  }
+
+  return [...current, { sectionId, text }];
+}
+
+function buildWorkspaceSections(
+  originalSections: SectionText[],
+  overrides: TailoredSectionOverride[],
+  result: Phase1AnalysisResult | null,
+  sectionWarnings: Partial<Record<EditableTailoredSectionId, string>>,
+): TailoredWorkspaceSection[] {
+  const overrideMap = new Map(overrides.map((override) => [override.sectionId, override.text]));
+  const orderedSectionIds: EditableTailoredSectionId[] = [
+    "header",
+    "summary",
+    "skills",
+    "experience",
+    "projects",
+    "education",
+    "certifications",
+    "languages",
+  ];
+
+  return orderedSectionIds.reduce<TailoredWorkspaceSection[]>((sections, sectionId) => {
+      const originalText = getOriginalSectionText(originalSections, sectionId);
+      const hasOverride = overrideMap.has(sectionId);
+      const tailoredText = hasOverride
+        ? (overrideMap.get(sectionId) ?? "").trim()
+        : originalText;
+
+      if (!originalText.trim() && !tailoredText.trim()) {
+        return sections;
+      }
+
+      sections.push({
+        sectionId,
+        title: getSectionTitle(sectionId),
+        originalText,
+        tailoredText,
+        badges: result ? buildSectionBadges(result, sectionId) : [],
+        warning: sectionWarnings[sectionId],
+      });
+
+      return sections;
+    }, []);
+}
+
+function getOriginalSectionText(
+  sections: SectionText[],
+  sectionId: EditableTailoredSectionId,
+) {
+  const match = sections.find(
+    (section) => mapSectionLabelToSectionId(section.label) === sectionId,
+  );
+
+  return match?.text.trim() ?? "";
+}
+
+function mapSectionLabelToSectionId(
+  label: string,
+): EditableTailoredSectionId | null {
+  const normalized = label.trim().toLowerCase();
+
+  if (normalized === "header") return "header";
+  if (
+    normalized === "summary" ||
+    normalized === "profile" ||
+    normalized === "professional summary" ||
+    normalized === "objective"
+  ) {
+    return "summary";
+  }
+  if (
+    normalized === "skills" ||
+    normalized === "technical skills" ||
+    normalized === "core skills" ||
+    normalized === "tools" ||
+    normalized === "technologies"
+  ) {
+    return "skills";
+  }
+  if (
+    normalized === "experience" ||
+    normalized === "employment" ||
+    normalized === "work history" ||
+    normalized === "professional experience"
+  ) {
+    return "experience";
+  }
+  if (normalized === "projects" || normalized === "project experience") {
+    return "projects";
+  }
+  if (normalized === "education") return "education";
+  if (normalized === "certifications" || normalized === "licenses") {
+    return "certifications";
+  }
+  if (normalized === "languages") return "languages";
+
+  return null;
+}
+
+function getSectionTitle(sectionId: EditableTailoredSectionId) {
+  const titles: Record<EditableTailoredSectionId, string> = {
+    header: "Header",
+    summary: "Summary",
+    skills: "Skills",
+    experience: "Experience",
+    projects: "Projects",
+    education: "Education",
+    certifications: "Certifications",
+    languages: "Languages",
+  };
+
+  return titles[sectionId];
+}
+
+function buildSectionBadges(
+  result: Phase1AnalysisResult,
+  sectionId: EditableTailoredSectionId,
+) {
+  const labels = new Set<string>();
+
+  for (const requirement of result.job.requirements) {
+    const targetsSection =
+      requirement.matchedEvidence.some((match) =>
+        doesSourceSectionMapToDraftSection(match.anchors[0]?.section, sectionId),
+      ) ||
+      requirement.matchedEvidence.some((match) =>
+        doesSourceSectionMapToDraftSection(
+          result.cv.facts.find((fact) => fact.id === match.factId)?.sourceSection,
+          sectionId,
+        ),
+      );
+
+    if (!targetsSection) {
+      continue;
+    }
+
+    if (requirement.evidenceStatus === "missing") {
+      labels.add("Missing");
+    } else if (requirement.evidenceStatus === "weak") {
+      labels.add("Weak");
+    } else if (requirement.category === "must_have") {
+      labels.add("Must-have");
+    } else if (requirement.category === "tool") {
+      labels.add("Tool");
+    } else if (requirement.category === "domain") {
+      labels.add("Domain");
+    } else if (requirement.category === "soft_skill") {
+      labels.add("Soft skill");
+    } else if (requirement.category === "nice_to_have") {
+      labels.add("Preferred");
+    }
+
+    if (labels.size >= 3) {
+      break;
+    }
+  }
+
+  return [...labels];
+}
+
+function doesSourceSectionMapToDraftSection(
+  sourceSection: string | undefined,
+  sectionId: EditableTailoredSectionId,
+) {
+  if (!sourceSection) {
+    return false;
+  }
+
+  return mapSectionLabelToSectionId(sourceSection) === sectionId;
 }
 
 function CvUploadPanel({
@@ -1737,12 +1898,12 @@ function RightStartPanel() {
     <div className="rounded-md border border-zinc-200 bg-white p-4">
       <div className="mb-3 flex items-center gap-2">
         <Wand2 className="h-5 w-5 text-emerald-700" aria-hidden="true" />
-        <h2 className="text-base font-semibold">Evidence-first analysis</h2>
+        <h2 className="text-base font-semibold">Automation-first tailoring</h2>
       </div>
       <p className="text-sm leading-6 text-zinc-600">
-        Analyze the master CV against a job posting to extract requirements,
-        map them to grounded evidence, surface gaps, collect truthful user
-        confirmations, and flag ATS hygiene risks.
+        Upload a master CV, add the job posting, and let SmartCV generate a
+        tailored draft anchored to truthful CV evidence. You only step in when a
+        genuinely missing fact needs confirmation.
       </p>
     </div>
   );
@@ -1753,7 +1914,7 @@ function WorkspaceGuide() {
     <div className="rounded-md border border-zinc-200 bg-white p-4">
       <div className="mb-3 flex items-center gap-2">
         <ShieldCheck className="h-5 w-5 text-emerald-700" aria-hidden="true" />
-        <h2 className="text-base font-semibold">Phase 3 flow</h2>
+        <h2 className="text-base font-semibold">Tailoring flow</h2>
       </div>
       <div className="space-y-3">
         <MiniStep
@@ -1765,16 +1926,16 @@ function WorkspaceGuide() {
           text="SmartCV turns both texts into candidate facts and job requirements."
         />
         <MiniStep
-          title="3. Match"
-          text="Each requirement is marked as supported, weak, missing, or blocked."
+          title="3. Generate"
+          text="SmartCV builds the tailored CV draft first, using grounded evidence and safe deterministic wording."
         />
         <MiniStep
           title="4. Confirm"
-          text="Add truthful evidence for weak, missing, or blocked requirements and re-run the analysis."
+          text="Only real missing or unclear facts become confirmation questions for you to answer."
         />
         <MiniStep
-          title="5. Tailor"
-          text="Generate a deterministic tailored draft that stays anchored to supported evidence."
+          title="5. Review"
+          text="Use advanced analysis only when you want to inspect why SmartCV made the changes."
         />
       </div>
     </div>

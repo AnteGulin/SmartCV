@@ -2,6 +2,8 @@ import OpenAI from "openai";
 import type {
   AnalyzeRequest,
   DraftPolishCandidate,
+  OpenAISectionRegenerationCandidate,
+  OpenAISectionRegenerationResult,
   OpenAIDraftPolishResult,
   OpenAIAssistResult,
 } from "@/lib/types";
@@ -55,6 +57,20 @@ const polishSchema = {
           },
         },
       },
+    },
+  },
+} as const;
+
+const sectionRegenerationSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["text", "changedMeaning", "warnings"],
+  properties: {
+    text: { type: "string" },
+    changedMeaning: { type: "boolean" },
+    warnings: {
+      type: "array",
+      items: { type: "string" },
     },
   },
 } as const;
@@ -175,6 +191,67 @@ export async function polishDraftItemsWithOpenAI(
   return {
     model,
     items: parsed.items ?? [],
+  };
+}
+
+export async function regenerateDraftSectionWithOpenAI(
+  candidate: OpenAISectionRegenerationCandidate,
+): Promise<OpenAISectionRegenerationResult> {
+  const model = process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL;
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+  const response = await client.responses.create({
+    model,
+    input: [
+      {
+        role: "system",
+        content: [
+          "You assist SmartCV with rewriting one CV section only.",
+          "Rewrite wording so the section better matches the job requirements using only factual information already present in the original section text and current tailored section text.",
+          "Preserve employers, dates, job titles, education, certifications, languages, metrics, tools, and factual claims.",
+          "Do not invent experience, responsibilities, tools, years of experience, seniority, work authorization, locations, or achievements.",
+          "Do not add missing requirements, fluent English claims, timezone notes, soft skills, or nice-to-have keywords unless they are already explicit in the source section.",
+          "Do not change other sections.",
+          "If you are unsure, keep the wording close to the current tailored section text.",
+          "Return strict JSON only.",
+        ].join(" "),
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          task: "Rewrite this one tailored CV section without changing factual content.",
+          sectionId: candidate.sectionId,
+          sectionLabel: candidate.sectionLabel,
+          originalSectionText: candidate.originalSectionText,
+          currentTailoredSectionText: candidate.currentTailoredSectionText,
+          requirementSnippets: candidate.requirementSnippets,
+          evidenceSnippets: candidate.evidenceSnippets,
+        }),
+      },
+    ],
+    max_output_tokens: 1800,
+    text: {
+      format: {
+        type: "json_schema",
+        name: "smartcv_section_regeneration",
+        strict: true,
+        schema: sectionRegenerationSchema,
+      },
+    },
+  });
+
+  const text = response.output_text;
+  if (!text) {
+    throw new Error("OpenAI returned no section regeneration output.");
+  }
+
+  const parsed = JSON.parse(text) as Omit<OpenAISectionRegenerationResult, "model">;
+
+  return {
+    model,
+    text: parsed.text,
+    changedMeaning: parsed.changedMeaning,
+    warnings: parsed.warnings ?? [],
   };
 }
 

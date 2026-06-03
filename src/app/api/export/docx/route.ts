@@ -12,6 +12,7 @@ import {
 } from "@/lib/analysis-service";
 import { composeDeterministicDraft } from "@/lib/draft-composer";
 import {
+  applyTailoredSectionOverrides,
   applyValidatedDraftPolish,
   buildDraftPolishCandidates,
   validateDeterministicDraft,
@@ -22,6 +23,7 @@ import type {
   ExportDocxRequest,
   ExportPolishedItem,
   OpenAIDraftPolishItem,
+  TailoredSectionOverride,
   TailoredDraftResult,
 } from "@/lib/types";
 
@@ -124,6 +126,16 @@ export async function POST(request: Request) {
       }
     }
 
+    const sanitizedSectionOverrides = sanitizeSectionOverrides(body.sectionOverrides);
+
+    if (sanitizedSectionOverrides.length) {
+      result = applyTailoredSectionOverrides(
+        result,
+        analysis.cv.sections,
+        sanitizedSectionOverrides,
+      );
+    }
+
     const preview = buildExportPreview(result);
     const exportValidation = validateExportPreview(result, preview, {
       acknowledgedBlockedDraft: body.acknowledgedBlockedDraft === true,
@@ -160,6 +172,52 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+}
+
+function sanitizeSectionOverrides(value: unknown): TailoredSectionOverride[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const overrides: TailoredSectionOverride[] = [];
+
+  for (const candidate of value) {
+    if (!candidate || typeof candidate !== "object") {
+      continue;
+    }
+
+    const sectionId =
+      typeof candidate.sectionId === "string" ? candidate.sectionId.trim() : "";
+    const text = typeof candidate.text === "string" ? candidate.text.trim() : "";
+
+    if (!isEditableSectionId(sectionId) || !text || seen.has(sectionId)) {
+      continue;
+    }
+
+    seen.add(sectionId);
+    overrides.push({
+      sectionId,
+      text: text.slice(0, 12000),
+    });
+  }
+
+  return overrides;
+}
+
+function isEditableSectionId(
+  value: string,
+): value is TailoredSectionOverride["sectionId"] {
+  return (
+    value === "header" ||
+    value === "summary" ||
+    value === "skills" ||
+    value === "experience" ||
+    value === "projects" ||
+    value === "education" ||
+    value === "certifications" ||
+    value === "languages"
+  );
 }
 
 function sanitizeExportPolishedItems(value: unknown): ExportPolishedItem[] {

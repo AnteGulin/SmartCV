@@ -24,6 +24,41 @@ const REQUIREMENT_CATEGORIES = new Set([
   "hard_blocker",
 ]);
 const EVIDENCE_STATUSES = new Set(["supported", "weak", "missing", "blocked"]);
+const IMPROVEMENT_FACETS = new Set([
+  "must_have",
+  "preferred",
+  "responsibility",
+  "tool",
+  "domain",
+  "soft_skill",
+  "language",
+  "location",
+  "seniority",
+]);
+const IMPROVEMENT_COVERAGES = new Set([
+  "covered",
+  "partially_covered",
+  "missing",
+  "unclear",
+]);
+const IMPROVEMENT_ACTIONS = new Set([
+  "rewrite_existing_evidence",
+  "move_existing_evidence",
+  "add_keyword_to_existing_truth",
+  "ask_user_for_confirmation",
+  "do_not_add",
+]);
+const IMPROVEMENT_TRUTH_RISKS = new Set(["low", "medium", "high"]);
+const IMPROVEMENT_SECTION_IDS = new Set([
+  "header",
+  "summary",
+  "skills",
+  "experience",
+  "projects",
+  "education",
+  "certifications",
+  "languages",
+]);
 const MATCH_TYPES = new Set(["exact", "phrase", "synonym", "semantic", "inferred"]);
 const EVIDENCE_STRENGTHS = new Set(["strong", "medium", "weak"]);
 const ATS_SEVERITIES = new Set(["info", "warning", "critical"]);
@@ -114,6 +149,7 @@ export function isPhase1AnalysisResult(
     isFiniteNumber(result.matching?.blockedCount) &&
     Array.isArray(result.ats?.warnings) &&
     result.ats.warnings.every(isAtsWarning) &&
+    (!result.improvements || isRequirementImprovementResult(result.improvements)) &&
     isScoring(result.scoring)
   );
 }
@@ -405,6 +441,136 @@ function isScoring(value: unknown): value is Phase1AnalysisResult["scoring"] {
     isFiniteNumber(breakdown?.blockedWeight) &&
     isFiniteNumber(breakdown?.blockedHardBlockerPenalty) &&
     isFiniteNumber(breakdown?.atsPenalty)
+  );
+}
+
+function isRequirementImprovementResult(
+  value: unknown,
+): value is NonNullable<Phase1AnalysisResult["improvements"]> {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const result = value as NonNullable<Phase1AnalysisResult["improvements"]>;
+
+  return (
+    Boolean(result.summary) &&
+    isFiniteNumber(result.summary.coveredCount) &&
+    isFiniteNumber(result.summary.partiallyCoveredCount) &&
+    isFiniteNumber(result.summary.missingCount) &&
+    isFiniteNumber(result.summary.unclearCount) &&
+    isFiniteNumber(result.summary.lowRiskCount) &&
+    isFiniteNumber(result.summary.mediumRiskCount) &&
+    isFiniteNumber(result.summary.highRiskCount) &&
+    isFiniteNumber(result.summary.confirmationQuestionCount) &&
+    Array.isArray(result.requirements) &&
+    result.requirements.every(isRequirementImprovementDecision) &&
+    Array.isArray(result.sectionGroups) &&
+    result.sectionGroups.every(isRequirementImprovementSectionGroup) &&
+    Array.isArray(result.questions) &&
+    result.questions.every(isRequirementImprovementQuestion)
+  );
+}
+
+function isRequirementImprovementDecision(
+  value: unknown,
+): value is NonNullable<Phase1AnalysisResult["improvements"]>["requirements"][number] {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const decision = value as NonNullable<
+    Phase1AnalysisResult["improvements"]
+  >["requirements"][number];
+
+  return (
+    typeof decision.requirementId === "string" &&
+    typeof decision.requirementText === "string" &&
+    isEnumValue(IMPROVEMENT_FACETS, decision.facet) &&
+    isEnumValue(IMPROVEMENT_COVERAGES, decision.coverage) &&
+    isEnumValue(IMPROVEMENT_ACTIONS, decision.action) &&
+    (!decision.targetSectionId || isEnumValue(IMPROVEMENT_SECTION_IDS, decision.targetSectionId)) &&
+    typeof decision.reason === "string" &&
+    isStringArray(decision.evidenceIds) &&
+    isStringArray(decision.evidenceSnippets) &&
+    isStringArray(decision.keywordsAdded) &&
+    isEnumValue(IMPROVEMENT_TRUTH_RISKS, decision.truthRisk) &&
+    (!decision.questionId || typeof decision.questionId === "string") &&
+    (!decision.suggestionId || typeof decision.suggestionId === "string")
+  );
+}
+
+function isRequirementImprovementSectionGroup(
+  value: unknown,
+): value is NonNullable<Phase1AnalysisResult["improvements"]>["sectionGroups"][number] {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const group = value as NonNullable<
+    Phase1AnalysisResult["improvements"]
+  >["sectionGroups"][number];
+
+  return (
+    isEnumValue(IMPROVEMENT_SECTION_IDS, group.sectionId) &&
+    typeof group.title === "string" &&
+    Array.isArray(group.suggestions) &&
+    group.suggestions.every(isRequirementImprovementSuggestion)
+  );
+}
+
+function isRequirementImprovementSuggestion(
+  value: unknown,
+): value is NonNullable<Phase1AnalysisResult["improvements"]>["sectionGroups"][number]["suggestions"][number] {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const suggestion = value as NonNullable<
+    Phase1AnalysisResult["improvements"]
+  >["sectionGroups"][number]["suggestions"][number];
+
+  return (
+    typeof suggestion.id === "string" &&
+    typeof suggestion.requirementId === "string" &&
+    typeof suggestion.requirementText === "string" &&
+    isEnumValue(IMPROVEMENT_SECTION_IDS, suggestion.targetSectionId) &&
+    typeof suggestion.originalText === "string" &&
+    typeof suggestion.suggestedText === "string" &&
+    (suggestion.action === "rewrite_existing_evidence" ||
+      suggestion.action === "move_existing_evidence" ||
+      suggestion.action === "add_keyword_to_existing_truth") &&
+    typeof suggestion.reason === "string" &&
+    isStringArray(suggestion.cvEvidenceIds) &&
+    isStringArray(suggestion.cvEvidenceSnippets) &&
+    isStringArray(suggestion.keywordsAdded) &&
+    isEnumValue(IMPROVEMENT_TRUTH_RISKS, suggestion.truthRisk) &&
+    isEnumValue(IMPROVEMENT_COVERAGES, suggestion.coverage)
+  );
+}
+
+function isRequirementImprovementQuestion(
+  value: unknown,
+): value is NonNullable<Phase1AnalysisResult["improvements"]>["questions"][number] {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const question = value as NonNullable<
+    Phase1AnalysisResult["improvements"]
+  >["questions"][number];
+
+  return (
+    typeof question.id === "string" &&
+    typeof question.requirementId === "string" &&
+    typeof question.requirementText === "string" &&
+    isEnumValue(IMPROVEMENT_FACETS, question.facet) &&
+    typeof question.prompt === "string" &&
+    isEnumValue(USER_EVIDENCE_TYPES, question.suggestedEvidenceType) &&
+    typeof question.reason === "string" &&
+    isEnumValue(IMPROVEMENT_TRUTH_RISKS, question.truthRisk) &&
+    (!question.recommendedTargetSectionId ||
+      isEnumValue(IMPROVEMENT_SECTION_IDS, question.recommendedTargetSectionId))
   );
 }
 

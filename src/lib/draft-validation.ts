@@ -17,10 +17,13 @@ import type {
   DraftPolishSummary,
   DraftStatus,
   DraftValidationIssue,
+  EditableTailoredSectionId,
   JobRequirement,
   OpenAIDraftPolishItem,
   Phase1AnalysisResult,
+  SectionText,
   TailoredDraftItem,
+  TailoredSectionOverride,
   TailoredDraftResult,
   TailoredDraftSection,
 } from "@/lib/types";
@@ -38,6 +41,12 @@ type DraftValidationResult = {
     userConfirmedOnlyItemCount: number;
     droppedItemCount: number;
   };
+  warnings: string[];
+};
+
+type SectionRegenerationValidationResult = {
+  accepted: boolean;
+  text: string;
   warnings: string[];
 };
 
@@ -62,11 +71,19 @@ export function validateDeterministicDraft(
   const requirementMap = new Map(
     analysis.job.requirements.map((requirement) => [requirement.id, requirement]),
   );
+  const sectionTextMap = buildSectionTextMap(analysis.cv.sections);
   const issues: DraftValidationIssue[] = [];
   const nextSections = sections.map((section) => ({
     ...section,
     items: section.items.map((item) =>
-      validateDraftItem(item, section.id, factMap, requirementMap, issues),
+      validateDraftItem(
+        item,
+        section.id,
+        factMap,
+        requirementMap,
+        sectionTextMap,
+        issues,
+      ),
     ),
   }));
   const blockedRequirementIds = analysis.job.requirements
@@ -110,8 +127,9 @@ export function validateDeterministicDraft(
   const hasWarningIssues = issues.some(
     (issue) => issue.severity === "warning" || issue.severity === "critical",
   );
+  const hasCopyReadyDraft = copyText.trim().length > 0;
 
-  const status: DraftStatus = blockedRequirementIds.length
+  const status: DraftStatus = !hasCopyReadyDraft
     ? "blocked"
     : hasNeedsReviewItems || hasWarningIssues || missingHighImportanceRequirementIds.length
       ? "needs_review"
@@ -145,6 +163,151 @@ export function getEligibleDraftPolishItemIds(result: TailoredDraftResult) {
     .filter((item) => isEligibleDraftPolishItem(item, factMap, requirementMap))
     .map((item) => item.id)
     .sort();
+}
+
+export function applyTailoredSectionOverrides(
+  result: TailoredDraftResult,
+  originalSections: SectionText[],
+  overrides: TailoredSectionOverride[],
+): TailoredDraftResult {
+  const overrideMap = new Map(
+    overrides.map((override) => [override.sectionId, normalizeText(override.text)]),
+  );
+
+  if (!overrideMap.size) {
+    return result;
+  }
+
+  const nextSections = result.draft.sections.map((section) => {
+    if (section.id === "review_notes") {
+      return section;
+    }
+
+    const overrideText = overrideMap.get(section.id);
+
+    if (!overrideText) {
+      return section;
+    }
+
+    return buildOverriddenDraftSection(
+      result.analysis,
+      originalSections,
+      section as TailoredDraftSection & { id: EditableTailoredSectionId },
+      overrideText,
+    );
+  });
+  const validatedDraft = validateDeterministicDraft(
+    result.analysis,
+    nextSections,
+    result.meta.warnings.filter((warning) => !warning.startsWith("Section override")),
+  );
+
+  return {
+    ...result,
+    draft: validatedDraft.draft,
+    validation: validatedDraft.validation,
+    meta: {
+      ...result.meta,
+      warnings: validatedDraft.warnings,
+    },
+  };
+}
+
+export function validateRegeneratedSectionText(options: {
+  analysis: Phase1AnalysisResult;
+  originalSections: SectionText[];
+  sectionId: EditableTailoredSectionId;
+  originalSectionText: string;
+  currentTailoredSectionText: string;
+  candidateText: string;
+}): SectionRegenerationValidationResult {
+  const text = normalizeText(options.candidateText);
+
+  if (!text.trim()) {
+    return {
+      accepted: false,
+      text: options.currentTailoredSectionText,
+      warnings: [
+        "OpenAI returned empty section wording, so SmartCV kept the current tailored section.",
+      ],
+    };
+  }
+
+  const referenceText = normalizeText(
+    [
+      options.originalSectionText,
+      options.currentTailoredSectionText,
+      getSectionEvidenceText(
+        options.analysis,
+        options.originalSections,
+        options.sectionId,
+      ),
+    ].join(" "),
+  ).toLowerCase();
+  const issues: string[] = [];
+
+  if (
+    text.length >
+    Math.max(
+      260,
+      Math.ceil(
+        Math.max(
+          options.originalSectionText.trim().length,
+          options.currentTailoredSectionText.trim().length,
+          1,
+        ) * 1.8,
+      ),
+    )
+  ) {
+    issues.push(
+      "OpenAI section regeneration expanded the section too aggressively, so SmartCV kept the current tailored wording.",
+    );
+  }
+
+  const unsupportedMetric = extractMetricClaims(text).find(
+    (claim) => !containsTerm(referenceText, claim),
+  );
+  if (unsupportedMetric) {
+    issues.push(
+      `OpenAI section regeneration introduced metric or numeric claim "${unsupportedMetric}" that is not grounded in the source section.`,
+    );
+  }
+
+  const unsupportedYears = extractYearClaims(text).find(
+    (claim) => !containsTerm(referenceText, claim),
+  );
+  if (unsupportedYears) {
+    issues.push(
+      `OpenAI section regeneration introduced date or years claim "${unsupportedYears}" that is not grounded in the source section.`,
+    );
+  }
+
+  const unsupportedStructuredTerm = findUnsupportedStructuredTerm(text, referenceText);
+  if (unsupportedStructuredTerm) {
+    issues.push(
+      `OpenAI section regeneration introduced structured claim "${unsupportedStructuredTerm}" that is not present in the source section.`,
+    );
+  }
+
+  if (!hasSufficientKeywordOverlap(text, referenceText)) {
+    issues.push(
+      "OpenAI section regeneration drifted too far from the source section wording, so SmartCV kept the current tailored section.",
+    );
+  }
+
+  if (issues.length) {
+    return {
+      accepted: false,
+      text: options.currentTailoredSectionText,
+      warnings: issues,
+    };
+  }
+
+  return {
+    accepted: true,
+    text,
+    warnings: [],
+  };
 }
 
 export function countEligibleDraftPolishItems(result: TailoredDraftResult) {
@@ -507,6 +670,7 @@ function validateDraftItem(
   sectionId: TailoredDraftSection["id"],
   factMap: Map<string, CandidateFact>,
   requirementMap: Map<string, JobRequirement>,
+  sectionTextMap: Map<TailoredDraftSection["id"], string>,
   issues: DraftValidationIssue[],
 ) {
   const nextItem: TailoredDraftItem = {
@@ -525,32 +689,39 @@ function validateDraftItem(
     return nextItem;
   }
 
+  const isPassthroughSectionItem = nextItem.sourceLabel === "passthrough";
+  const sectionEvidenceText = sectionTextMap.get(sectionId) ?? "";
+
   if (!nextItem.evidenceIds.length) {
-    const issue = buildIssue(
-      "missing_anchor",
-      "critical",
-      nextItem.id,
-      "This draft item has no evidence links.",
-      "Drop the item or attach it to at least one supporting evidence fact.",
-    );
-    issues.push(issue);
-    nextItem.warnings.push(issue);
-    nextItem.reviewState = "dropped";
-    return nextItem;
+    if (!(isPassthroughSectionItem && sectionEvidenceText)) {
+      const issue = buildIssue(
+        "missing_anchor",
+        "critical",
+        nextItem.id,
+        "This draft item has no evidence links.",
+        "Drop the item or attach it to at least one supporting evidence fact.",
+      );
+      issues.push(issue);
+      nextItem.warnings.push(issue);
+      nextItem.reviewState = "dropped";
+      return nextItem;
+    }
   }
 
   if (!nextItem.requirementIds.length) {
-    const issue = buildIssue(
-      "missing_anchor",
-      "critical",
-      nextItem.id,
-      "This draft item has no supporting requirement links.",
-      "Drop the item or map it to at least one supported job requirement.",
-    );
-    issues.push(issue);
-    nextItem.warnings.push(issue);
-    nextItem.reviewState = "dropped";
-    return nextItem;
+    if (!(isPassthroughSectionItem && sectionEvidenceText)) {
+      const issue = buildIssue(
+        "missing_anchor",
+        "critical",
+        nextItem.id,
+        "This draft item has no supporting requirement links.",
+        "Drop the item or map it to at least one supported job requirement.",
+      );
+      issues.push(issue);
+      nextItem.warnings.push(issue);
+      nextItem.reviewState = "dropped";
+      return nextItem;
+    }
   }
 
   const evidenceFacts = nextItem.evidenceIds
@@ -574,19 +745,24 @@ function validateDraftItem(
   }
 
   if (requirements.length !== nextItem.requirementIds.length) {
-    const issue = buildIssue(
-      "missing_requirement_support",
-      "critical",
-      nextItem.id,
-      "This draft item references requirements that no longer exist in the analysis.",
-      "Regenerate the draft from the latest analysis result.",
-    );
-    issues.push(issue);
-    nextItem.warnings.push(issue);
-    nextItem.reviewState = "dropped";
+    if (!(isPassthroughSectionItem && sectionEvidenceText)) {
+      const issue = buildIssue(
+        "missing_requirement_support",
+        "critical",
+        nextItem.id,
+        "This draft item references requirements that no longer exist in the analysis.",
+        "Regenerate the draft from the latest analysis result.",
+      );
+      issues.push(issue);
+      nextItem.warnings.push(issue);
+      nextItem.reviewState = "dropped";
+    }
   }
 
-  if (requirements.some((requirement) => requirement.evidenceStatus !== "supported")) {
+  if (
+    !isPassthroughSectionItem &&
+    requirements.some((requirement) => requirement.evidenceStatus !== "supported")
+  ) {
     const blockedRequirement = requirements.find(
       (requirement) => requirement.evidenceStatus === "blocked",
     );
@@ -630,7 +806,9 @@ function validateDraftItem(
     nextItem.reviewState = "needs_review";
   }
 
-  const combinedEvidenceText = buildCombinedEvidenceText(evidenceFacts);
+  const combinedEvidenceText = normalizeText(
+    [buildCombinedEvidenceText(evidenceFacts), sectionEvidenceText].join(" "),
+  ).toLowerCase();
   const unsupportedMetric = extractMetricClaims(nextItem.text).find(
     (claim) => !combinedEvidenceText.includes(normalizeKeywordPhrase(claim).toLowerCase()),
   );
@@ -927,6 +1105,42 @@ export function getDraftItemCopyExclusionReason(
   return "copy_excluded_by_validation";
 }
 
+function buildOverriddenDraftSection(
+  analysis: Phase1AnalysisResult,
+  originalSections: SectionText[],
+  section: TailoredDraftSection & { id: EditableTailoredSectionId },
+  overrideText: string,
+): TailoredDraftSection {
+  const lines = normalizeText(overrideText)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const baseEvidenceIds = uniqueStrings(
+    section.items.flatMap((item) => item.evidenceIds),
+  );
+  const baseRequirementIds = uniqueStrings(
+    section.items.flatMap((item) => item.requirementIds),
+  );
+  const sectionEvidenceIds = baseEvidenceIds.length
+    ? baseEvidenceIds
+    : getFallbackSectionEvidenceIds(analysis, originalSections, section.id);
+  const itemType = getOverrideItemType(section.id);
+
+  return {
+    ...section,
+    items: lines.map((line, index) => ({
+      id: `override_${section.id}_${index + 1}`,
+      type: itemType,
+      text: line,
+      evidenceIds: section.id === "header" ? [] : sectionEvidenceIds,
+      requirementIds: section.id === "header" ? [] : baseRequirementIds,
+      sourceLabel: "passthrough",
+      reviewState: "ready",
+      warnings: [],
+    })),
+  };
+}
+
 export function buildCopyText(sections: TailoredDraftSection[]) {
   const lines: string[] = [];
   const headerItems = sections.find((section) => section.id === "header")?.items ?? [];
@@ -964,6 +1178,48 @@ export function buildCopyText(sections: TailoredDraftSection[]) {
   return lines.join("\n").trim();
 }
 
+function buildSectionTextMap(sections: SectionText[]) {
+  const map = new Map<TailoredDraftSection["id"], string>();
+
+  for (const section of sections) {
+    const sectionId = mapSectionLabelToDraftSectionId(section.label);
+    if (sectionId) {
+      map.set(sectionId, normalizeText(section.text));
+    }
+  }
+
+  return map;
+}
+
+function getSectionEvidenceText(
+  analysis: Phase1AnalysisResult,
+  originalSections: SectionText[],
+  sectionId: EditableTailoredSectionId,
+) {
+  const sectionTextMap = buildSectionTextMap(originalSections.length ? originalSections : analysis.cv.sections);
+  const directSectionText = sectionTextMap.get(sectionId) ?? "";
+  const relevantFacts = analysis.cv.facts.filter((fact) =>
+    getDraftSectionIdFromSourceSection(fact.sourceSection) === sectionId,
+  );
+
+  return normalizeText(
+    [
+      directSectionText,
+      ...relevantFacts.flatMap((fact) => [
+        fact.text,
+        fact.role,
+        fact.company,
+        fact.dateRange,
+        fact.tools.join(" "),
+        fact.skills.join(" "),
+        fact.metrics.join(" "),
+      ]),
+    ]
+      .filter(Boolean)
+      .join(" "),
+  );
+}
+
 function buildCombinedEvidenceText(facts: CandidateFact[]) {
   return normalizeText(
     facts
@@ -979,6 +1235,125 @@ function buildCombinedEvidenceText(facts: CandidateFact[]) {
       .filter(Boolean)
       .join(" "),
   ).toLowerCase();
+}
+
+function getFallbackSectionEvidenceIds(
+  analysis: Phase1AnalysisResult,
+  originalSections: SectionText[],
+  sectionId: EditableTailoredSectionId,
+) {
+  const directFactIds = analysis.cv.facts
+    .filter((fact) => getDraftSectionIdFromSourceSection(fact.sourceSection) === sectionId)
+    .map((fact) => fact.id);
+
+  if (directFactIds.length) {
+    return uniqueStrings(directFactIds);
+  }
+
+  const sectionTextMap = buildSectionTextMap(originalSections.length ? originalSections : analysis.cv.sections);
+  const rawSectionText = sectionTextMap.get(sectionId) ?? "";
+
+  if (!rawSectionText) {
+    return [];
+  }
+
+  return uniqueStrings(
+    analysis.cv.facts
+      .filter((fact) => containsTerm(rawSectionText, fact.text))
+      .map((fact) => fact.id),
+  );
+}
+
+function getOverrideItemType(
+  sectionId: EditableTailoredSectionId,
+): TailoredDraftItem["type"] {
+  if (sectionId === "header") {
+    return "header_line";
+  }
+
+  if (sectionId === "summary") {
+    return "summary_bullet";
+  }
+
+  if (sectionId === "skills") {
+    return "skills_line";
+  }
+
+  if (sectionId === "projects") {
+    return "project_bullet";
+  }
+
+  if (sectionId === "languages") {
+    return "language_line";
+  }
+
+  if (sectionId === "experience") {
+    return "experience_bullet";
+  }
+
+  return "credential_line";
+}
+
+function getDraftSectionIdFromSourceSection(
+  sourceSection: string,
+): EditableTailoredSectionId | null {
+  const normalized = sourceSection.trim().toLowerCase();
+
+  if (normalized === "header") {
+    return "header";
+  }
+
+  if (
+    normalized === "summary" ||
+    normalized === "profile" ||
+    normalized === "professional summary" ||
+    normalized === "objective"
+  ) {
+    return "summary";
+  }
+
+  if (
+    normalized === "skills" ||
+    normalized === "technical skills" ||
+    normalized === "core skills" ||
+    normalized === "tools" ||
+    normalized === "technologies"
+  ) {
+    return "skills";
+  }
+
+  if (
+    normalized === "experience" ||
+    normalized === "employment" ||
+    normalized === "work history" ||
+    normalized === "professional experience"
+  ) {
+    return "experience";
+  }
+
+  if (normalized === "projects" || normalized === "project experience") {
+    return "projects";
+  }
+
+  if (normalized === "education") {
+    return "education";
+  }
+
+  if (normalized === "certifications" || normalized === "licenses") {
+    return "certifications";
+  }
+
+  if (normalized === "languages") {
+    return "languages";
+  }
+
+  return null;
+}
+
+function mapSectionLabelToDraftSectionId(
+  label: string,
+): EditableTailoredSectionId | null {
+  return getDraftSectionIdFromSourceSection(label);
 }
 
 function extractProtectedTerms(
@@ -1082,6 +1457,33 @@ function hasKeywordStuffing(polishedText: string, originalText: string) {
     const originalCount = countOccurrences(normalizedOriginal, term);
     return polishedCount >= 4 || polishedCount > originalCount + 2;
   });
+}
+
+function hasSufficientKeywordOverlap(candidateText: string, referenceText: string) {
+  const candidateKeywords = new Set(
+    extractKeywords(candidateText, 20)
+      .map(normalizeKeywordPhrase)
+      .filter((term) => term && !isGenericKeyword(term)),
+  );
+  const referenceKeywords = new Set(
+    extractKeywords(referenceText, 32)
+      .map(normalizeKeywordPhrase)
+      .filter((term) => term && !isGenericKeyword(term)),
+  );
+
+  if (!candidateKeywords.size || !referenceKeywords.size) {
+    return true;
+  }
+
+  let overlapCount = 0;
+
+  for (const term of candidateKeywords) {
+    if (referenceKeywords.has(term)) {
+      overlapCount += 1;
+    }
+  }
+
+  return overlapCount >= Math.max(2, Math.ceil(candidateKeywords.size * 0.3));
 }
 
 function isNearIdentical(left: string, right: string) {

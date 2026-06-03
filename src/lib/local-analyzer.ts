@@ -27,6 +27,7 @@ import {
   buildUserEvidenceAnchor,
   isMeaningfulUserEvidenceText,
 } from "@/lib/user-evidence";
+import { buildRequirementImprovements } from "@/lib/requirement-improvement-engine";
 import type {
   AnalyzerMode,
   ATSHygieneWarning,
@@ -86,6 +87,7 @@ const BOILERPLATE_SECTION_PATTERNS = [
   /\bperks\b/i,
   /\bprivacy\b/i,
   /\bprocess\b/i,
+  /\byou should not apply if\b/i,
   /\bwhy join\b/i,
 ];
 
@@ -104,6 +106,37 @@ const BOILERPLATE_TEXT_PATTERNS = [
   /\bwe value diversity\b/i,
 ];
 
+const HARD_NON_REQUIREMENT_PROSE_PATTERNS = [
+  /^(?:dear|hello|hi|thanks)\b/i,
+  /^(?:i am|i'm|iâ€™m|my name is)\b/i,
+  /^meet\s+[a-z]/i,
+  /^you do not have\b/i,
+  /^you are not\b/i,
+  /^you value in-office culture\b/i,
+  /\bthank you for\b/i,
+  /\bfollow us\b/i,
+  /\bvisit our\b/i,
+  /\bcopyright\b/i,
+  /\ball rights reserved\b/i,
+  /\bterms of (?:use|service)\b/i,
+  /\bcookie policy\b/i,
+];
+
+const NON_REQUIREMENT_PROSE_PATTERNS = [
+  /^(?:we(?:'re| are)|our team|our company|our mission|our culture)\b.*\b(?:excited|thrilled|proud|happy)\b/i,
+  /\bhere at\b/i,
+  /\bjoin us\b/i,
+  /\bwe(?:'re| are)\s+(?:excited|thrilled|delighted|happy)\b/i,
+  /\babout (?:us|the company|the team)\b/i,
+  /\bwhy (?:ashby|join us|work here)\b/i,
+  /\bwe build\b/i,
+  /\bwe believe\b/i,
+  /\bwe started\b/i,
+  /\bbacked by\b/i,
+  /\bfounded in\b/i,
+  /\bseries [abcde]\b/i,
+];
+
 const REQUIREMENT_SECTION_PATTERNS = [
   /\brequire/i,
   /\bqualif/i,
@@ -113,7 +146,11 @@ const REQUIREMENT_SECTION_PATTERNS = [
   /\bwhat we are looking for\b/i,
   /\bmust have\b/i,
   /\babout you\b/i,
+  /\bwho you are\b/i,
+  /\bwhat you bring\b/i,
   /\byour profile\b/i,
+  /\byou should apply if\b/i,
+  /\byou may be a good fit if\b/i,
 ];
 
 const RESPONSIBILITY_SECTION_PATTERNS = [
@@ -121,6 +158,8 @@ const RESPONSIBILITY_SECTION_PATTERNS = [
   /\bdut/i,
   /\bwhat you will do\b/i,
   /\bwhat you'll do\b/i,
+  /\bwhat you'll be doing\b/i,
+  /\bwhat you get to do\b/i,
 ];
 
 const PREFERRED_SECTION_PATTERNS = [
@@ -151,15 +190,25 @@ const NICE_TO_HAVE_PATTERNS = [
 ];
 
 const RESPONSIBILITY_PATTERNS = [
+  /\banaly[sz]e\b/i,
   /\bbuild\b/i,
+  /\bcollaborate\b/i,
+  /\bcoordinate\b/i,
   /\bdeliver\b/i,
+  /\bdocument\b/i,
   /\bdrive\b/i,
+  /\bexecute\b/i,
+  /\bimprove\b/i,
+  /\binvestigate\b/i,
   /\blead\b/i,
   /\bmaintain\b/i,
   /\bmanage\b/i,
   /\bown\b/i,
+  /\bpartner\b/i,
+  /\breproduce\b/i,
   /\bresponsible for\b/i,
   /\bsupport\b/i,
+  /\btroubleshoot\b/i,
   /\byou will\b/i,
 ];
 
@@ -379,6 +428,11 @@ export function analyzeLocally(
   const matchedRequirements = matchRequirementsToFacts(requirements, allFacts);
   const atsWarnings = runAtsHygieneChecks(cvText, cvSections, cvFacts);
   const scoring = computeScoring(matchedRequirements, atsWarnings);
+  const improvements = buildRequirementImprovements(
+    cvSections,
+    allFacts,
+    matchedRequirements,
+  );
 
   if (staleConfirmedEvidenceCount > 0) {
     metaWarnings.push(
@@ -428,6 +482,7 @@ export function analyzeLocally(
       warnings: atsWarnings,
     },
     scoring,
+    improvements,
   };
 }
 
@@ -657,10 +712,10 @@ function inferJobTitle(jobText: string, jobUrl: string, assistantTitle?: string)
   if (assistantTitle) return assistantTitle;
 
   const titlePatterns = [
-    /job title[:\s]+([^\n.]+)/i,
-    /position[:\s]+([^\n.]+)/i,
-    /role[:\s]+([^\n.]+)/i,
-    /hiring\s+(?:a|an)\s+([^\n.]+)/i,
+    /^job title\s*:\s*([^\n.]+)/im,
+    /^position\s*:\s*([^\n.]+)/im,
+    /^role\s*:\s*([^\n.]+)/im,
+    /^hiring\s+(?:a|an)\s+([^\n.]+)/im,
   ];
 
   for (const pattern of titlePatterns) {
@@ -672,7 +727,14 @@ function inferJobTitle(jobText: string, jobUrl: string, assistantTitle?: string)
 
   const firstLine = jobText.split("\n").find((line) => {
     const trimmed = line.trim();
-    return trimmed.length > 6 && trimmed.length < 90 && !trimmed.endsWith(".");
+    return (
+      trimmed.length > 6 &&
+      trimmed.length < 90 &&
+      !trimmed.endsWith(".") &&
+      !/^(?:about this role|role responsibilities|role requirements|you should apply if|you should not apply if|about [a-z])/i.test(
+        trimmed,
+      )
+    );
   });
 
   if (firstLine) return cleanTitle(firstLine);
@@ -2032,7 +2094,11 @@ function detectHardBlockerKind(text: string): HardBlockerKind | undefined {
   if (/(travel|willingness to travel)/i.test(lower)) {
     return "travel";
   }
-  if (/(time zone|timezone|shift|weekend|night shift|cest|cet|est|pst)/i.test(lower)) {
+  if (
+    /\b(?:time zone|timezone|shift|weekend|night shift|cest|cet|est|pst)\b/i.test(
+      lower,
+    )
+  ) {
     return "shift";
   }
   if (/(based in|located in|must reside|on-site|onsite|hybrid|in-office|relocate)/i.test(lower)) {
@@ -2303,21 +2369,29 @@ function shouldKeepRequirementItem(
 ) {
   const normalized = normalizeText(text);
   if (normalized.length < 3) return false;
-  if (isBoilerplateText(normalized)) return false;
+  if (isNonRequirementText(normalized, intent, sectionLabel)) return false;
   if (isLikelyJobTitleLine(normalized)) return false;
   if (/^(apply|click|submit|learn more)\b/i.test(normalized)) return false;
 
   if (intent === "responsibility") {
-    return normalized.length >= 12;
+    return normalized.length >= 12 && hasResponsibilityCue(normalized);
   }
 
   if (intent === "must_have" || intent === "preferred" || intent === "about_you") {
-    return normalized.length >= 4;
+    return (
+      normalized.length >= 4 &&
+      (hasQualificationCue(normalized) ||
+        hasToolCue(normalized) ||
+        Boolean(detectHardBlockerKind(normalized)) ||
+        hasCandidateFacingCue(normalized))
+    );
   }
 
   return (
     hasRequirementCue(normalized) ||
+    hasQualificationCue(normalized) ||
     hasToolCue(normalized) ||
+    Boolean(detectHardBlockerKind(normalized)) ||
     DOMAIN_KEYWORDS.some((keyword) => normalized.toLowerCase().includes(keyword)) ||
     SOFT_SKILL_KEYWORDS.some((keyword) => normalized.toLowerCase().includes(keyword)) ||
     sectionLooksRelevant(sectionLabel)
@@ -2338,15 +2412,52 @@ function hasRequirementCue(text: string) {
     HARD_BLOCKER_PATTERNS.some((pattern) => pattern.test(text)) ||
     MUST_HAVE_PATTERNS.some((pattern) => pattern.test(text)) ||
     NICE_TO_HAVE_PATTERNS.some((pattern) => pattern.test(text)) ||
-    RESPONSIBILITY_PATTERNS.some((pattern) => pattern.test(text)) ||
     /\bexperience with\b/i.test(text) ||
     /\byou have\b/i.test(text) ||
-    /\bwe are looking for\b/i.test(text)
+    /\bwe are looking for\b/i.test(text) ||
+    /\byou should apply if\b/i.test(text) ||
+    /\byou may be a good fit if\b/i.test(text)
   );
 }
 
 function hasToolCue(text: string) {
   return [...KNOWN_TOOLS].some((tool) => containsTerm(text, tool));
+}
+
+function hasResponsibilityCue(text: string) {
+  return (
+    RESPONSIBILITY_PATTERNS.some((pattern) => pattern.test(text)) ||
+    /^\b(?:investigate|analy[sz]e|maintain|coordinate|collaborate|document|troubleshoot|support|lead|manage|own|drive|build|deliver|improve|partner|reproduce)\b/i.test(
+      text,
+    ) ||
+    /\byou(?:'ll| will)\b/i.test(text)
+  );
+}
+
+function hasCandidateFacingCue(text: string) {
+  return (
+    /\byou(?:'ll| will| have| are| bring| may| should)\b/i.test(text) ||
+    /\bability to\b/i.test(text) ||
+    /\bcomfortable\b/i.test(text) ||
+    /\bbackground in\b/i.test(text) ||
+    /\bfamiliar(?:ity)? with\b/i.test(text)
+  );
+}
+
+function hasQualificationCue(text: string) {
+  return (
+    /\bexperience (?:with|in)\b/i.test(text) ||
+    /\bproficien(?:cy|t)\b/i.test(text) ||
+    /\bknowledge of\b/i.test(text) ||
+    /\bstrong\b/i.test(text) ||
+    /\bability to\b/i.test(text) ||
+    /\bfamiliar(?:ity)? with\b/i.test(text) ||
+    /\bbackground in\b/i.test(text) ||
+    /\bunderstanding of\b/i.test(text) ||
+    /\bexcellent\b/i.test(text) ||
+    /\bflu(?:ent|ency)\b/i.test(text) ||
+    /\byears? of experience\b/i.test(text)
+  );
 }
 
 function extractLocationPhrase(text: string) {
@@ -2452,6 +2563,50 @@ function containsTerm(text: string, term: string) {
 
 function isBoilerplateText(text: string) {
   return BOILERPLATE_TEXT_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function isNonRequirementText(
+  text: string,
+  intent: SectionIntent,
+  sectionLabel: string,
+) {
+  if (isBoilerplateText(text)) return true;
+  if (HARD_NON_REQUIREMENT_PROSE_PATTERNS.some((pattern) => pattern.test(text))) {
+    return true;
+  }
+  if (NON_REQUIREMENT_PROSE_PATTERNS.some((pattern) => pattern.test(text))) {
+    return !hasCandidateFacingCue(text) && !hasQualificationCue(text) && !hasToolCue(text);
+  }
+
+  const normalizedSectionLabel = sectionLabel.toLowerCase();
+  const headingOnly =
+    text.split(" ").length <= 6 &&
+    !/[.!?]$/.test(text) &&
+    !hasRequirementCue(text) &&
+    !hasQualificationCue(text) &&
+    !hasResponsibilityCue(text) &&
+    !hasToolCue(text) &&
+    !Boolean(detectHardBlockerKind(text));
+
+  if (headingOnly) {
+    return true;
+  }
+
+  if (
+    intent === "general" &&
+    !sectionLooksRelevant(normalizedSectionLabel) &&
+    !hasRequirementCue(text) &&
+    !hasQualificationCue(text) &&
+    !hasResponsibilityCue(text) &&
+    !hasToolCue(text) &&
+    !Boolean(detectHardBlockerKind(text)) &&
+    !DOMAIN_KEYWORDS.some((keyword) => text.toLowerCase().includes(keyword)) &&
+    !SOFT_SKILL_KEYWORDS.some((keyword) => text.toLowerCase().includes(keyword))
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 function isBulletLine(line: string) {

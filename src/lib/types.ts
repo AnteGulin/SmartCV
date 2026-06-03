@@ -16,6 +16,42 @@ export type EvidenceStatus =
   | "missing"
   | "blocked";
 
+export type ImprovementRequirementFacet =
+  | "must_have"
+  | "preferred"
+  | "responsibility"
+  | "tool"
+  | "domain"
+  | "soft_skill"
+  | "language"
+  | "location"
+  | "seniority";
+
+export type ImprovementCoverage =
+  | "covered"
+  | "partially_covered"
+  | "missing"
+  | "unclear";
+
+export type ImprovementAction =
+  | "rewrite_existing_evidence"
+  | "move_existing_evidence"
+  | "add_keyword_to_existing_truth"
+  | "ask_user_for_confirmation"
+  | "do_not_add";
+
+export type ImprovementTruthRisk = "low" | "medium" | "high";
+
+export type ImprovementSectionId =
+  | "header"
+  | "summary"
+  | "skills"
+  | "experience"
+  | "projects"
+  | "education"
+  | "certifications"
+  | "languages";
+
 export type MatchType =
   | "exact"
   | "phrase"
@@ -170,6 +206,72 @@ export interface GroundedOpenAIAssist {
   warnings: string[];
 }
 
+export interface RequirementImprovementDecision {
+  requirementId: string;
+  requirementText: string;
+  facet: ImprovementRequirementFacet;
+  coverage: ImprovementCoverage;
+  action: ImprovementAction;
+  targetSectionId?: ImprovementSectionId;
+  reason: string;
+  evidenceIds: string[];
+  evidenceSnippets: string[];
+  keywordsAdded: string[];
+  truthRisk: ImprovementTruthRisk;
+  questionId?: string;
+  suggestionId?: string;
+}
+
+export interface RequirementImprovementSuggestion {
+  id: string;
+  requirementId: string;
+  requirementText: string;
+  targetSectionId: ImprovementSectionId;
+  originalText: string;
+  suggestedText: string;
+  action: Exclude<ImprovementAction, "ask_user_for_confirmation" | "do_not_add">;
+  reason: string;
+  cvEvidenceIds: string[];
+  cvEvidenceSnippets: string[];
+  keywordsAdded: string[];
+  truthRisk: ImprovementTruthRisk;
+  coverage: ImprovementCoverage;
+}
+
+export interface RequirementImprovementSectionGroup {
+  sectionId: ImprovementSectionId;
+  title: string;
+  suggestions: RequirementImprovementSuggestion[];
+}
+
+export interface RequirementImprovementQuestion {
+  id: string;
+  requirementId: string;
+  requirementText: string;
+  facet: ImprovementRequirementFacet;
+  prompt: string;
+  suggestedEvidenceType: UserEvidenceType;
+  reason: string;
+  truthRisk: ImprovementTruthRisk;
+  recommendedTargetSectionId?: ImprovementSectionId;
+}
+
+export interface RequirementImprovementResult {
+  summary: {
+    coveredCount: number;
+    partiallyCoveredCount: number;
+    missingCount: number;
+    unclearCount: number;
+    lowRiskCount: number;
+    mediumRiskCount: number;
+    highRiskCount: number;
+    confirmationQuestionCount: number;
+  };
+  requirements: RequirementImprovementDecision[];
+  sectionGroups: RequirementImprovementSectionGroup[];
+  questions: RequirementImprovementQuestion[];
+}
+
 export interface Phase1AnalysisResult {
   meta: {
     version: "phase1.v1";
@@ -198,6 +300,7 @@ export interface Phase1AnalysisResult {
     warnings: ATSHygieneWarning[];
   };
   scoring: Scoring;
+  improvements?: RequirementImprovementResult;
 }
 
 export type DraftItemType =
@@ -302,6 +405,16 @@ export interface TailoredDraftSection {
   items: TailoredDraftItem[];
 }
 
+export type EditableTailoredSectionId = Exclude<
+  TailoredDraftSection["id"],
+  "review_notes"
+>;
+
+export interface TailoredSectionOverride {
+  sectionId: EditableTailoredSectionId;
+  text: string;
+}
+
 export interface TailoredDraftResult {
   meta: {
     version: "phase3.v1" | "phase3b.v1";
@@ -347,6 +460,37 @@ export interface OpenAIDraftPolishItem {
 export interface OpenAIDraftPolishResult {
   model: string;
   items: OpenAIDraftPolishItem[];
+}
+
+export interface OpenAISectionRegenerationCandidate {
+  sectionId: EditableTailoredSectionId;
+  sectionLabel: string;
+  originalSectionText: string;
+  currentTailoredSectionText: string;
+  requirementSnippets: string[];
+  evidenceSnippets: string[];
+}
+
+export interface OpenAISectionRegenerationResult {
+  model: string;
+  text: string;
+  changedMeaning: boolean;
+  warnings: string[];
+}
+
+export interface RegenerateSectionRequest extends AnalyzeRequest {
+  sectionId: EditableTailoredSectionId;
+  sectionLabel: string;
+  originalSectionText: string;
+  currentTailoredSectionText: string;
+}
+
+export interface RegenerateSectionResponse {
+  sectionId: EditableTailoredSectionId;
+  sectionLabel: string;
+  text: string;
+  model?: string;
+  warnings: string[];
 }
 
 export type ExportTextSource = "deterministic" | "polished_validated";
@@ -413,4 +557,5 @@ export interface ExportDocxRequest extends AnalyzeRequest {
   format: "docx";
   acknowledgedBlockedDraft?: boolean;
   polishedItems?: ExportPolishedItem[];
+  sectionOverrides?: TailoredSectionOverride[];
 }

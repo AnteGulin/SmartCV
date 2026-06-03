@@ -2,10 +2,13 @@ import { isGenericKeyword, normalizeText, uniqueStrings } from "@/lib/analysis-u
 import type {
   CandidateFact,
   DraftSourceLabel,
+  EditableTailoredSectionId,
   JobRequirement,
   Phase1AnalysisResult,
+  SectionText,
   TailoredDraftItem,
   TailoredDraftSection,
+  TailoredSectionOverride,
   UserConfirmedEvidence,
 } from "@/lib/types";
 
@@ -204,6 +207,58 @@ export function buildDraftPolishSignature(
   }
 
   return `phase3b.v1:${hash}:${itemIds.length}`;
+}
+
+export function buildTailoredSectionOverridesFromDraft(
+  originalSections: SectionText[],
+  draftSections: TailoredDraftSection[],
+): TailoredSectionOverride[] {
+  const originalSectionMap = new Map(
+    originalSections
+      .map((section) => {
+        const sectionId = mapSectionLabelToDraftSectionId(section.label);
+        return sectionId ? [sectionId, section.text.trim()] : null;
+      })
+      .filter(
+        (entry): entry is [EditableTailoredSectionId, string] => Boolean(entry),
+      ),
+  );
+  const draftSectionMap = new Map(
+    draftSections
+      .filter(
+        (section): section is TailoredDraftSection & {
+          id: EditableTailoredSectionId;
+        } => section.id !== "review_notes",
+      )
+      .map((section) => [section.id, buildSectionDraftText(section)]),
+  );
+  const orderedSectionIds = [
+    ...new Set<EditableTailoredSectionId>([
+      ...originalSections
+        .map((section) => mapSectionLabelToDraftSectionId(section.label))
+        .filter((sectionId): sectionId is EditableTailoredSectionId => Boolean(sectionId)),
+      ...draftSections
+        .map((section) => (section.id === "review_notes" ? null : section.id))
+        .filter((sectionId): sectionId is EditableTailoredSectionId => Boolean(sectionId)),
+    ]),
+  ];
+
+  return orderedSectionIds
+    .map((sectionId) => {
+      const originalText = originalSectionMap.get(sectionId) ?? "";
+      const draftText = draftSectionMap.get(sectionId) ?? "";
+      const seedText = chooseSectionSeedText(sectionId, originalText, draftText).trim();
+
+      if (!seedText) {
+        return null;
+      }
+
+      return {
+        sectionId,
+        text: seedText,
+      } satisfies TailoredSectionOverride;
+    })
+    .filter((item): item is TailoredSectionOverride => Boolean(item));
 }
 
 function buildHeaderSection(analysis: Phase1AnalysisResult): TailoredDraftSection {
@@ -700,4 +755,87 @@ function formatDraftTerm(value: string) {
     .split(" ")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
+}
+
+function buildSectionDraftText(section: TailoredDraftSection) {
+  return section.items
+    .map((item) =>
+      item.polish?.state === "validated" && item.polish.polishedText
+        ? item.polish.polishedText
+        : item.text,
+    )
+    .join("\n")
+    .trim();
+}
+
+function chooseSectionSeedText(
+  sectionId: EditableTailoredSectionId,
+  originalText: string,
+  draftText: string,
+) {
+  if (sectionId === "summary" || sectionId === "skills") {
+    return draftText || originalText;
+  }
+
+  if (sectionId === "header") {
+    return originalText || draftText;
+  }
+
+  return originalText || draftText;
+}
+
+function mapSectionLabelToDraftSectionId(
+  label: string,
+): EditableTailoredSectionId | null {
+  const normalized = label.trim().toLowerCase();
+
+  if (normalized === "header") {
+    return "header";
+  }
+
+  if (
+    normalized === "summary" ||
+    normalized === "profile" ||
+    normalized === "professional summary" ||
+    normalized === "objective"
+  ) {
+    return "summary";
+  }
+
+  if (
+    normalized === "skills" ||
+    normalized === "technical skills" ||
+    normalized === "core skills" ||
+    normalized === "tools" ||
+    normalized === "technologies"
+  ) {
+    return "skills";
+  }
+
+  if (
+    normalized === "experience" ||
+    normalized === "employment" ||
+    normalized === "work history" ||
+    normalized === "professional experience"
+  ) {
+    return "experience";
+  }
+
+  if (normalized === "projects" || normalized === "project experience") {
+    return "projects";
+  }
+
+  if (normalized === "education") {
+    return "education";
+  }
+
+  if (normalized === "certifications" || normalized === "licenses") {
+    return "certifications";
+  }
+
+  if (normalized === "languages") {
+    return "languages";
+  }
+
+  return null;
 }
